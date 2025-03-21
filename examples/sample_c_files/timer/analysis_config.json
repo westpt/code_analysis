@@ -1,0 +1,27 @@
+{
+    "project_name": "timer_system",
+    "source_files": [
+        "src/timer.c",
+        "src/timer_internal.c"
+    ],
+    "include_paths": [
+        "include"
+    ],
+    "entry_points": [
+        "timer_system_init",
+        "timer_create",
+        "timer_start",
+        "timer_pause",
+        "timer_cancel",
+        "timer_update",
+        "timer_system_destroy",
+        "timer_count"
+    ],
+    "analysis_options": {
+        "generate_cfg": true,
+        "generate_dfg": true,
+        "include_internal_functions": true,
+        "track_global_variables": true,
+        "track_heap_allocations": true
+    }
+}
