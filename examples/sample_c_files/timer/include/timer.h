@@ -52,71 +52,61 @@ typedef struct {
 
 /**
  * @brief 初始化定时器系统
- * 
- * @return 初始化的定时器系统指针
  */
-TimerSystem* timer_system_init(void);
+void timer_system_init(void);
 
 /**
  * @brief 创建一个新的定时器任务
  * 
- * @param system 定时器系统指针
  * @param interval 定时间隔(毫秒)
  * @param callback 回调函数
  * @param arg 回调函数参数
  * @param repeat 是否重复执行
  * @return 创建的定时器ID，0表示创建失败
  */
-uint32_t timer_create(TimerSystem* system, uint32_t interval, TimerCallback callback, void* arg, bool repeat);
+uint32_t timer_create(uint32_t interval, TimerCallback callback, void* arg, bool repeat);
 
 /**
  * @brief 启动定时器任务
  * 
- * @param system 定时器系统指针
  * @param id 定时器ID
  * @return 是否成功启动
  */
-bool timer_start(TimerSystem* system, uint32_t id);
+bool timer_start(uint32_t id);
 
 /**
  * @brief 暂停定时器任务
  * 
- * @param system 定时器系统指针
  * @param id 定时器ID
  * @return 是否成功暂停
  */
-bool timer_pause(TimerSystem* system, uint32_t id);
+bool timer_pause(uint32_t id);
 
 /**
  * @brief 取消定时器任务
  * 
- * @param system 定时器系统指针
  * @param id 定时器ID
  * @return 是否成功取消
  */
-bool timer_cancel(TimerSystem* system, uint32_t id);
+bool timer_cancel(uint32_t id);
 
 /**
  * @brief 更新定时器系统，处理到期的定时器任务
  * 
- * @param system 定时器系统指针
  * @param elapsed 经过的时间(毫秒)
  */
-void timer_update(TimerSystem* system, uint32_t elapsed);
+void timer_update(uint32_t elapsed);
 
 /**
  * @brief 销毁定时器系统，释放所有资源
- * 
- * @param system 定时器系统指针
  */
-void timer_system_destroy(TimerSystem* system);
+void timer_system_destroy(void);
 
 /**
  * @brief 获取定时器系统中的定时器数量
  * 
- * @param system 定时器系统指针
  * @return 定时器数量
  */
-uint32_t timer_count(TimerSystem* system);
+uint32_t timer_count(void);
 
 #endif /* TIMER_H */

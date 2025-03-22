@@ -11,27 +11,34 @@
 #include <stdio.h>
 #include <string.h>
 
+// 定义静态全局TimerSystem指针
+static TimerSystem* g_timer_system = NULL;
+
 /**
  * @brief 初始化定时器系统
  */
-TimerSystem* timer_system_init(void) {
-    TimerSystem* system = (TimerSystem*)malloc(sizeof(TimerSystem));
-    if (system == NULL) {
-        return NULL;
+bool timer_system_init(void) {
+    if (g_timer_system != NULL) {
+        return true;
     }
     
-    system->head = NULL;
-    system->next_id = 1;  // ID从1开始，0表示无效ID
-    system->running = true;
+    g_timer_system = (TimerSystem*)malloc(sizeof(TimerSystem));
+    if (g_timer_system == NULL) {
+        return false;
+    }
     
-    return system;
+    g_timer_system->head = NULL;
+    g_timer_system->next_id = 1;  // ID从1开始，0表示无效ID
+    g_timer_system->running = true;
+    
+    return true;
 }
 
 /**
  * @brief 创建一个新的定时器任务
  */
-uint32_t timer_create(TimerSystem* system, uint32_t interval, TimerCallback callback, void* arg, bool repeat) {
-    if (system == NULL || callback == NULL || interval == 0) {
+uint32_t timer_create(uint32_t interval, TimerCallback callback, void* arg, bool repeat) {
+    if (g_timer_system == NULL || callback == NULL || interval == 0) {
         return 0;
     }
     
@@ -41,7 +48,7 @@ uint32_t timer_create(TimerSystem* system, uint32_t interval, TimerCallback call
     }
     
     // 初始化定时器
-    timer->id = system->next_id++;
+    timer->id = g_timer_system->next_id++;
     timer->interval = interval;
     timer->remaining = interval;
     timer->repeat = repeat;
@@ -51,11 +58,11 @@ uint32_t timer_create(TimerSystem* system, uint32_t interval, TimerCallback call
     timer->next = NULL;
     
     // 添加到链表头部
-    if (system->head == NULL) {
-        system->head = timer;
+    if (g_timer_system->head == NULL) {
+        g_timer_system->head = timer;
     } else {
-        timer->next = system->head;
-        system->head = timer;
+        timer->next = g_timer_system->head;
+        g_timer_system->head = timer;
     }
     
     return timer->id;
@@ -64,12 +71,12 @@ uint32_t timer_create(TimerSystem* system, uint32_t interval, TimerCallback call
 /**
  * @brief 启动定时器任务
  */
-bool timer_start(TimerSystem* system, uint32_t id) {
-    if (system == NULL) {
+bool timer_start(uint32_t id) {
+    if (g_timer_system == NULL) {
         return false;
     }
     
-    Timer* timer = find_timer(system, id);
+    Timer* timer = find_timer(g_timer_system, id);
     if (timer == NULL) {
         return false;
     }
@@ -85,12 +92,12 @@ bool timer_start(TimerSystem* system, uint32_t id) {
 /**
  * @brief 暂停定时器任务
  */
-bool timer_pause(TimerSystem* system, uint32_t id) {
-    if (system == NULL) {
+bool timer_pause(uint32_t id) {
+    if (g_timer_system == NULL) {
         return false;
     }
     
-    Timer* timer = find_timer(system, id);
+    Timer* timer = find_timer(g_timer_system, id);
     if (timer == NULL) {
         return false;
     }
@@ -106,19 +113,19 @@ bool timer_pause(TimerSystem* system, uint32_t id) {
 /**
  * @brief 取消定时器任务
  */
-bool timer_cancel(TimerSystem* system, uint32_t id) {
-    if (system == NULL) {
+bool timer_cancel(uint32_t id) {
+    if (g_timer_system == NULL) {
         return false;
     }
     
-    Timer* current = system->head;
+    Timer* current = g_timer_system->head;
     Timer* prev = NULL;
     
     while (current != NULL) {
         if (current->id == id) {
             // 从链表中移除
             if (prev == NULL) {
-                system->head = current->next;
+                g_timer_system->head = current->next;
             } else {
                 prev->next = current->next;
             }
@@ -137,12 +144,12 @@ bool timer_cancel(TimerSystem* system, uint32_t id) {
 /**
  * @brief 更新定时器系统，处理到期的定时器任务
  */
-void timer_update(TimerSystem* system, uint32_t elapsed) {
-    if (system == NULL || !system->running) {
+void timer_update(uint32_t elapsed) {
+    if (g_timer_system == NULL || !g_timer_system->running) {
         return;
     }
     
-    Timer* current = system->head;
+    Timer* current = g_timer_system->head;
     Timer* prev = NULL;
     
     while (current != NULL) {
@@ -159,7 +166,7 @@ void timer_update(TimerSystem* system, uint32_t elapsed) {
                 } else {
                     // 非重复执行的定时器，从链表中移除
                     if (prev == NULL) {
-                        system->head = current->next;
+                        g_timer_system->head = current->next;
                     } else {
                         prev->next = current->next;
                     }
@@ -182,13 +189,13 @@ void timer_update(TimerSystem* system, uint32_t elapsed) {
 /**
  * @brief 销毁定时器系统，释放所有资源
  */
-void timer_system_destroy(TimerSystem* system) {
-    if (system == NULL) {
+void timer_system_destroy(void) {
+    if (g_timer_system == NULL) {
         return;
     }
     
     // 释放所有定时器
-    Timer* current = system->head;
+    Timer* current = g_timer_system->head;
     while (current != NULL) {
         Timer* next = current->next;
         free(current);
@@ -196,7 +203,27 @@ void timer_system_destroy(TimerSystem* system) {
     }
     
     // 释放系统结构
-    free(system);
+    free(g_timer_system);
+    g_timer_system = NULL;
+}
+
+/**
+ * @brief 获取定时器系统中的定时器数量
+ */
+uint32_t timer_count(void) {
+    if (g_timer_system == NULL) {
+        return 0;
+    }
+    
+    uint32_t count = 0;
+    Timer* current = g_timer_system->head;
+    
+    while (current != NULL) {
+        count++;
+        current = current->next;
+    }
+    
+    return count;
 }
 
 /**

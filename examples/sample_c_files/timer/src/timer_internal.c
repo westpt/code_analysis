@@ -12,6 +12,10 @@
  * @brief 查找指定ID的定时器
  */
 Timer* find_timer(TimerSystem* system, uint32_t id) {
+    if (system == NULL) {
+        return NULL;
+    }
+    
     Timer* current = system->head;
     while (current != NULL) {
         if (current->id == id) {

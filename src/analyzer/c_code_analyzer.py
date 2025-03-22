@@ -96,6 +96,9 @@ class CCodeAnalyzer:
             # 识别全局变量和静态变量
             if storage_class == clang.cindex.StorageClass.STATIC:
                 self.static_vars.add(var_name)
+                # 如果是文件作用域的静态变量，也将其添加到全局变量集合中
+                if cursor.semantic_parent.kind == clang.cindex.CursorKind.TRANSLATION_UNIT:
+                    self.global_vars.add(var_name)
             elif cursor.semantic_parent.kind == clang.cindex.CursorKind.TRANSLATION_UNIT:
                 self.global_vars.add(var_name)
                 
@@ -429,10 +432,10 @@ class CCodeAnalyzer:
                 'files': self.files,
                 'variables': {
                     name: {
-                        **{k: str(v) if not isinstance(v, (bool, int, float, str, type(None)))
-                           else v for k, v in info.items()},
-                        'is_global': name in self.global_vars,
-                        'is_static': name in self.static_vars,
+                        **{k: (v if isinstance(v, (bool, int, float, str, type(None))) else 
+                             (v if k == 'references' and isinstance(v, list) else str(v)))
+                           for k, v in info.items()},
+                        # 确保is_heap属性被正确设置
                         'is_heap': name in self.heap_vars
                     }
                     for name, info in self.variables.items()
