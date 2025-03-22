@@ -314,42 +314,45 @@ class CCodeAnalyzer:
             if child.kind != clang.cindex.CursorKind.FUNCTION_DECL:  # 避免重复处理函数
                 self._build_cfg_dfg(child, parent_func)
     
+
     def _track_heap_variables(self):
-        """跟踪堆变量的引用和传递"""
-        # 第一轮：标记直接的堆变量
+        """跟踪指向堆内存的指针变量"""
+        # 第一轮：标记直接指向堆内存的指针变量
         for var_name in self.heap_vars:
             var_info = self.variables.get(var_name)
             if not var_info:
                 continue
                 
-            # 分析该堆变量的所有引用
+            # 分析该指针变量的所有引用
             for ref in var_info['references']:
                 func = ref['function']
-                # 在数据流图中添加堆变量的特殊标记
+                # 在数据流图中添加指向堆内存的特殊标记
                 self.dfg.add_edge(var_name, func, type='heap_reference')
         
-        # 第二轮：跟踪堆变量的传递
-        # 查找数据流图中的赋值关系，如果源变量是堆变量，则目标变量也应该是堆变量
+        # 第二轮：跟踪指向堆内存的指针传递
+        # 查找数据流图中的赋值关系，如果源变量指向堆内存，则目标变量也指向堆内存
         heap_propagated = True
         while heap_propagated:
             heap_propagated = False
             for src, dst, data in self.dfg.edges(data=True):
                 if data.get('type') == 'assignment' and src in self.heap_vars and dst not in self.heap_vars:
-                    if dst in self.variables:
+                    if dst in self.variables and self.variables[dst]['is_pointer']:
                         self.heap_vars.add(dst)
                         self.variables[dst]['is_heap'] = True
                         heap_propagated = True
                         
         # 第三轮：检查结构体成员指针
-        # 如果一个结构体变量是堆分配的，那么它的成员指针也应该被标记为堆变量
+        # 分析结构体成员是否指向堆内存
         for var_name, var_info in self.variables.items():
-            if var_info['is_heap'] and var_info['is_pointer']:
-                # 查找所有引用这个变量的地方
+            # 检查是否是结构体指针且指向堆内存
+            if var_info['is_pointer'] and ('struct' in var_info['type'].lower() or 'union' in var_info['type'].lower()):
+                # 查找所有引用这个结构体的成员
                 for ref_var, ref_info in self.variables.items():
                     if ref_var != var_name and ref_info['is_pointer']:
                         # 检查是否是通过结构体成员访问
                         for ref in ref_info.get('references', []):
                             if var_name in str(ref):
+                                # 标记结构体成员指针指向堆内存
                                 self.heap_vars.add(ref_var)
                                 self.variables[ref_var]['is_heap'] = True
     
@@ -435,8 +438,8 @@ class CCodeAnalyzer:
                         **{k: (v if isinstance(v, (bool, int, float, str, type(None))) else 
                              (v if k == 'references' and isinstance(v, list) else str(v)))
                            for k, v in info.items()},
-                        # 确保is_heap属性被正确设置
-                        'is_heap': name in self.heap_vars
+                        # 确保is_heap属性被正确设置，表示该指针是否指向堆内存
+                        'is_heap': name in self.heap_vars and info['is_pointer']
                     }
                     for name, info in self.variables.items()
                 },
