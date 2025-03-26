@@ -62,7 +62,7 @@ def main():
             source_files = [args.path]
         
         # 执行分析
-        print(f"Analyzing source files...")
+        print(f"Analyzing source files...{source_files}")
         analyzer = CCodeAnalyzer(source_files[0], include_paths).analyze()
         
         # 生成可视化结果
@@ -92,6 +92,11 @@ def main():
         print(f"- Static variables: {len(analyzer.static_vars)}")
         print(f"- Heap variables: {len(analyzer.heap_vars)}")
         print(f"- Function calls: {len(analyzer.function_calls)}")
+        # 获取函数总数和函数定义数
+        total_functions = len(analyzer.functions)
+        defined_functions = len([f for f in analyzer.functions.values() if not f.get('is_declaration', False)])
+        print(f"- Total functions: {total_functions}")
+        print(f"- Function definitions: {defined_functions}")
         print(f"- Analyzed files: {len(analyzer.files)}")
         
         return 0

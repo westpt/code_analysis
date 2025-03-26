@@ -75,3 +75,13 @@ Thumbs.db
 # Output directory contents
 output/*
 !output/.gitkeep
+
+# Temporary analysis files
+temp/
+*.ast
+*.dump
+*.tree
+*.json
+*.debug
+*.log.txt
+*.analysis

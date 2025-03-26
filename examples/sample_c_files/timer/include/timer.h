@@ -53,7 +53,7 @@ typedef struct {
 /**
  * @brief 初始化定时器系统
  */
-void timer_system_init(void);
+ bool timer_system_init(void);
 
 /**
  * @brief 创建一个新的定时器任务

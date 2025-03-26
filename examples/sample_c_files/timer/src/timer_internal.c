@@ -5,7 +5,7 @@
  * 该文件实现了定时器系统的内部函数，仅供内部实现使用。
  */
 
-#include "timer_internal.h"
+#include "../include/timer_internal.h"
 #include <stdlib.h>
 
 /**

@@ -6,7 +6,7 @@
  */
 
 #include "../include/timer.h"
-#include "timer_internal.h"
+#include "../include/timer_internal.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -217,25 +217,6 @@ uint32_t timer_count(void) {
     
     uint32_t count = 0;
     Timer* current = g_timer_system->head;
-    
-    while (current != NULL) {
-        count++;
-        current = current->next;
-    }
-    
-    return count;
-}
-
-/**
- * @brief 获取定时器系统中的定时器数量
- */
-uint32_t timer_count(TimerSystem* system) {
-    if (system == NULL) {
-        return 0;
-    }
-    
-    uint32_t count = 0;
-    Timer* current = system->head;
     
     while (current != NULL) {
         count++;
