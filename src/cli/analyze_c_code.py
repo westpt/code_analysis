@@ -38,7 +38,7 @@ def main():
         
         if args.path.endswith('.json'):
             try:
-                with open(args.path, 'r') as f:
+                with open(args.path, 'r', encoding='utf-8') as f:
                     config = json.load(f)
                 
                 # 从配置文件中获取源文件和包含路径

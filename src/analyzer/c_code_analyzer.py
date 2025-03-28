@@ -58,7 +58,7 @@ class CCodeAnalyzer:
         
         # 创建解析日志文件
         parse_log_file = os.path.join(temp_dir, 'parse_debug.log')
-        with open(parse_log_file, 'w') as log_f:
+        with open(parse_log_file, 'w', encoding='utf-8') as log_f:
             log_f.write(f"开始解析，文件列表: {self.files}\n")
             log_f.write(f"包含路径: {self.include_paths}\n\n")
             # 记录libclang配置信息
@@ -93,7 +93,7 @@ class CCodeAnalyzer:
                 args.append(f'-I{include_path}')
             
             # 记录当前文件的解析参数 - 使用独立的with块
-            with open(parse_log_file, 'a') as log_f:
+            with open(parse_log_file, 'a', encoding='utf-8') as log_f:
                 log_f.write(f"\n解析文件: {file_path}\n")
                 log_f.write(f"编译参数: {args}\n")
                 log_f.write(f"文件是否存在: {os.path.exists(file_path)}\n")
@@ -158,7 +158,7 @@ class CCodeAnalyzer:
                         for path in glob.glob(pattern):
                             if os.path.exists(path):
                                 args.append(f'-I{path}')
-                                with open(parse_log_file, 'a') as log_f:
+                                with open(parse_log_file, 'a', encoding='utf-8') as log_f:
                                     log_f.write(f"添加标准库头文件路径: {path}\n")
                     
                     # 创建临时stdlib.h文件（如果需要）
@@ -166,7 +166,7 @@ class CCodeAnalyzer:
                     temp_stdlib_path = os.path.join(temp_dir, 'stdlib.h')
                     if not os.path.exists(temp_stdlib_path):
                         try:
-                            with open(temp_stdlib_path, 'w') as f:
+                            with open(temp_stdlib_path, 'w', encoding='utf-8') as f:
                                 f.write("// 临时stdlib.h文件，用于解决标准库头文件缺失问题\n")
                                 f.write("#ifndef _STDLIB_H\n")
                                 f.write("#define _STDLIB_H\n\n")
@@ -179,10 +179,10 @@ class CCodeAnalyzer:
                                 f.write("void exit(int status);\n\n")
                                 f.write("#endif /* _STDLIB_H */\n")
                             args.append(f'-I{temp_dir}')
-                            with open(parse_log_file, 'a') as log_f:
+                            with open(parse_log_file, 'a', encoding='utf-8') as log_f:
                                 log_f.write(f"创建并添加临时stdlib.h文件: {temp_stdlib_path}\n")
                         except Exception as e:
-                            with open(parse_log_file, 'a') as log_f:
+                            with open(parse_log_file, 'a', encoding='utf-8') as log_f:
                                 log_f.write(f"创建临时stdlib.h文件失败: {e}\n")
                 else:
                     # Linux/macOS平台常见的包含路径
@@ -196,11 +196,11 @@ class CCodeAnalyzer:
                         for path in glob.glob(pattern):
                             if os.path.exists(path):
                                 args.append(f'-I{path}')
-                                with open(parse_log_file, 'a') as log_f:
+                                with open(parse_log_file, 'a', encoding='utf-8') as log_f:
                                     log_f.write(f"添加标准库头文件路径: {path}\n")
                 
                 # 记录最终编译参数
-                with open(parse_log_file, 'a') as log_f:
+                with open(parse_log_file, 'a', encoding='utf-8') as log_f:
                     log_f.write(f"最终编译参数: {args}\n")
                 
                 # 使用详细的解析选项
@@ -208,11 +208,11 @@ class CCodeAnalyzer:
                 
                 # 尝试使用不同的解析选项
                 try:
-                    with open(parse_log_file, 'a') as log_f:
+                    with open(parse_log_file, 'a', encoding='utf-8') as log_f:
                         log_f.write("尝试使用标准解析选项...\n")
                     tu = self.index.parse(file_path, args, options=options)
                 except Exception as e1:
-                    with open(parse_log_file, 'a') as log_f:
+                    with open(parse_log_file, 'a', encoding='utf-8') as log_f:
                         log_f.write(f"标准解析失败: {e1}\n")
                         log_f.write("尝试使用更宽松的解析选项...\n")
                     try:
@@ -220,7 +220,7 @@ class CCodeAnalyzer:
                         options |= clang.cindex.TranslationUnit.PARSE_INCOMPLETE
                         tu = self.index.parse(file_path, args, options=options)
                     except Exception as e2:
-                        with open(parse_log_file, 'a') as log_f:
+                        with open(parse_log_file, 'a', encoding='utf-8') as log_f:
                             log_f.write(f"宽松解析也失败: {e2}\n")
                             # 记录详细的异常信息
                             import traceback
@@ -231,7 +231,7 @@ class CCodeAnalyzer:
                 
                 if tu:
                     # 记录解析成功信息
-                    with open(parse_log_file, 'a') as log_f:
+                    with open(parse_log_file, 'a', encoding='utf-8') as log_f:
                         log_f.write(f"成功解析文件: {file_path}\n")
                         log_f.write(f"诊断信息数量: {len(tu.diagnostics)}\n")
                         
@@ -322,24 +322,24 @@ class CCodeAnalyzer:
                     
                     # 生成AST调试文件
                     ast_debug_file = os.path.join(temp_dir, f'{os.path.basename(file_path)}.ast.debug')
-                    with open(ast_debug_file, 'w') as f:
+                    with open(ast_debug_file, 'w', encoding='utf-8') as f:
                         self._dump_ast(tu.cursor, f)
                     
                     print(f"{tu.cursor.spelling} AST generated at {ast_debug_file}")   
                     
-                    self._find_variables(tu.cursor)
+                    self._parse_code_elements(tu.cursor)
                     self._build_cfg_dfg(tu.cursor)
                 else:
                     error_msg = f"Warning: Failed to parse {file_path}"
                     print(error_msg)
-                    with open(parse_log_file, 'a') as log_f:
+                    with open(parse_log_file, 'a', encoding='utf-8') as log_f:
                         log_f.write(f"{error_msg}\n")
             except Exception as e:
                 error_msg = f"Error parsing {file_path}: {e}"
                 print(error_msg)
                 
                 # 记录详细的异常信息 - 使用独立的with块
-                with open(parse_log_file, 'a') as log_f:
+                with open(parse_log_file, 'a', encoding='utf-8') as log_f:
                     log_f.write(f"{error_msg}\n")
                     # 记录异常堆栈
                     import traceback
@@ -485,295 +485,365 @@ class CCodeAnalyzer:
         for child in cursor.get_children():
             self._dump_ast(child, file, level + 1)
     
-    def _find_variables(self, cursor, parent_func=None):
+    def _parse_code_elements(self, cursor, parent_func=None):
         """递归查找所有变量声明"""
         # 创建函数定义调试文件
         temp_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'temp')
         func_debug_file = os.path.join(temp_dir, 'function_definitions.debug')
         var_debug_file = os.path.join(temp_dir, 'variable_analysis.debug')
-        # print(f"\n---{cursor.spelling}--{cursor.location.file} {cursor.kind} {cursor.location.line}-----all function:")
+        
         if cursor.kind == clang.cindex.CursorKind.FUNCTION_DECL:
-            func_name = cursor.spelling
-            # 记录函数定义信息到调试文件
-            with open(func_debug_file, 'a') as f:
-                print(f"\n---{cursor.spelling} : {cursor.location.file}:{cursor.location.line}:{cursor.location.column}---\n");
-                f.write(f"\nFunction: {func_name}\n")
-                f.write(f"Is Definition: {cursor.is_definition()}\n")
-                f.write(f"Location: {cursor.location.file}:{cursor.location.line}:{cursor.location.column}\n")
-                f.write(f"Return Type: {cursor.result_type.spelling}\n")
-                f.write(f"Parameters:\n")
-                for param in cursor.get_arguments():
-                    f.write(f"  - {param.spelling}: {param.type.spelling}\n")
-                f.write(f"Extent: {cursor.extent.start.line}-{cursor.extent.end.line}\n")
-                f.write("---\n")
-            
-            # 处理函数定义和声明
-            self.functions = getattr(self, 'functions', {})
-            
-            # 检查是否是函数定义
-            is_def = cursor.is_definition()
-            
-            # 检查是否有函数体
-            has_body = False
-            # 检查是否是函数定义而不是声明
-            if cursor.spelling == "timer_pause":
-                print(f"\n---{cursor.spelling}--{cursor.is_definition()}-----timer_pause function:")
-                print(f"Location: {cursor.location.file}\n")
-                print(f"------timer_pause function:")
-            print(f"------2 timer_pause {cursor.spelling} function:")
-            if cursor.is_definition():
-                # 如果是timer_pause函数,打印调试信息
-                if cursor.spelling == "timer_pause":
-                    print(f"\nDebug timer_pause function:")
-                    print(f"Function name: {cursor.spelling}")
-                    print(f"Is definition: {cursor.is_definition()}")
-                    print(f"Location: {cursor.location.file}:{cursor.location.line}")
-                    print("Children nodes:")
-
-                # 遍历所有子节点查找函数体相关节点
-                for child in cursor.get_children():
-                    # 如果是timer_pause,打印每个子节点信息
-                    if cursor.spelling == "timer_pause":
-                        print(f"- Node kind: {child.kind}")
-                        print(f"  Node spelling: {child.spelling}")
-                        print(f"  Location: {child.location.file}:{child.location.line}")
-
-                    # 检查复合语句(标准函数体)
-                    if child.kind == clang.cindex.CursorKind.COMPOUND_STMT:
-                        has_body = True
-                        if cursor.spelling == "timer_pause":
-                            print("Found COMPOUND_STMT body")
-                        break
-                    # 检查内联函数体
-                    elif child.kind == clang.cindex.CursorKind.UNEXPOSED_EXPR:
-                        for subchild in child.get_children():
-                            if cursor.spelling == "timer_pause":
-                                print(f"  Subnode kind: {subchild.kind}")
-                            if subchild.kind == clang.cindex.CursorKind.COMPOUND_STMT:
-                                has_body = True
-                                if cursor.spelling == "timer_pause":
-                                    print("Found inline function body")
-                                break
-                    # 检查宏展开的函数体
-                    elif child.kind == clang.cindex.CursorKind.MACRO_INSTANTIATION:
-                        has_body = True
-                        if cursor.spelling == "timer_pause":
-                            print("Found macro body")
-                        break
-                    if has_body:
-                        break
-
-                if cursor.spelling == "timer_pause":
-                    print(f"Has body: {has_body}\n")
-            
-            # 如果是函数定义且有函数体
-            if is_def and has_body:
-                # 记录函数信息，如果已存在声明则更新为定义
-                func_info = {
-                    'name': func_name,
-                    'start_line': cursor.extent.start.line,
-                    'end_line': cursor.extent.end.line,
-                    'return_type': cursor.result_type.spelling,
-                    'parameters': [],
-                    'local_variables': [],
-                    'calls': [],
-                    'location': f"{cursor.location.file}:{cursor.location.line}:{cursor.location.column}",
-                    'is_declaration': False,
-                    'has_body': True
-                }
-                
-                # 如果已存在函数信息，保留某些字段
-                if func_name in self.functions:
-                    existing_func = self.functions[func_name]
-                    if existing_func.get('calls'):
-                        func_info['calls'] = existing_func['calls']
-                    if existing_func.get('local_variables'):
-                        func_info['local_variables'] = existing_func['local_variables']
-                
-                self.functions[func_name] = func_info
-                
-                # 处理函数参数
-                for param in cursor.get_arguments():
-                    param_info = {
-                        'name': param.spelling,
-                        'type': param.type.spelling,
-                        'location': f"{param.location.file}:{param.location.line}:{param.location.column}"
-                    }
-                    self.functions[func_name]['parameters'].append(param_info)
-                
-                # 递归处理函数体
-                for child in cursor.get_children():
-                    self._find_variables(child, func_name)
-            else:
-                # 处理函数声明，但不覆盖已有的函数定义
-                if func_name not in self.functions or self.functions[func_name].get('is_declaration', False):
-                    self.functions[func_name] = {
-                        'name': func_name,
-                        'is_declaration': True,
-                        'return_type': cursor.result_type.spelling,
-                        'parameters': [],
-                        'location': f"{cursor.location.file}:{cursor.location.line}:{cursor.location.column}",
-                        'has_body': False
-                    }
-                    # 处理函数参数
-                    for param in cursor.get_arguments():
-                        param_info = {
-                            'name': param.spelling,
-                            'type': param.type.spelling,
-                            'location': f"{param.location.file}:{param.location.line}:{param.location.column}"
-                        }
-                        self.functions[func_name]['parameters'].append(param_info)
-            
-            # 注意：这里删除了错误的return语句，允许继续处理函数参数和函数体
-                
+            self._process_function_declaration(cursor, func_debug_file, parent_func)
         elif cursor.kind == clang.cindex.CursorKind.VAR_DECL:
-            var_name = cursor.spelling
-            var_type = cursor.type.spelling
-            storage_class = cursor.storage_class
+            self._process_variable_declaration(cursor, var_debug_file, parent_func)
+        
+        # 递归处理子节点
+        for child in cursor.get_children():
+            self._parse_code_elements(child, parent_func)
             
-            # 记录变量分析信息到调试文件
-            with open(var_debug_file, 'a') as f:
-                f.write(f"\nVariable: {var_name}\n")
-                f.write(f"Type: {var_type}\n")
-                f.write(f"Storage Class: {storage_class}\n")
-                f.write(f"Location: {cursor.location.file}:{cursor.location.line}:{cursor.location.column}\n")
-                f.write(f"Parent Function: {parent_func}\n")
-                f.write(f"Is Global: {cursor.semantic_parent.kind == clang.cindex.CursorKind.TRANSLATION_UNIT}\n")
-                f.write(f"Is Static: {storage_class == clang.cindex.StorageClass.STATIC}\n")
-                f.write("---\n")
-            
-            # 记录变量信息
-            var_info = {
-                'type': var_type,
-                'storage': storage_class,
-                'location': f"{cursor.location.file}:{cursor.location.line}:{cursor.location.column}",
-                'is_pointer': '*' in var_type,
-                'references': [],
-                'is_global': cursor.semantic_parent.kind == clang.cindex.CursorKind.TRANSLATION_UNIT,
-                'is_static': storage_class == clang.cindex.StorageClass.STATIC,
-                'is_heap': False,
-                'parent_function': parent_func
-            }
-            
-            # 只有全局变量和静态变量才添加到variables集合中
-            if cursor.semantic_parent.kind == clang.cindex.CursorKind.TRANSLATION_UNIT or \
-               storage_class == clang.cindex.StorageClass.STATIC:
-                self.variables[var_name] = var_info
-            
-            # 如果是函数内的局部变量，添加到函数的局部变量列表
-            if parent_func and parent_func in self.functions:
-                self.functions[parent_func]['local_variables'].append({
-                    'name': var_name,
-                    'type': var_type,
-                    'location': var_info['location']
-                })
-            
-            # 识别全局变量和静态变量
-            if storage_class == clang.cindex.StorageClass.STATIC:
-                self.static_vars.add(var_name)
-                # 如果是文件作用域的静态变量，也将其添加到全局变量集合中
-                if cursor.semantic_parent.kind == clang.cindex.CursorKind.TRANSLATION_UNIT:
-                    self.global_vars.add(var_name)
-            elif cursor.semantic_parent.kind == clang.cindex.CursorKind.TRANSLATION_UNIT:
-                self.global_vars.add(var_name)
+    def _process_function_declaration(self, cursor, debug_file, parent_func=None):
+        """处理函数声明和定义"""
+        func_name = cursor.spelling
+        
+        # 记录函数定义信息到调试文件
+        with open(debug_file, 'a', encoding='utf-8') as f:
+            f.write(f"\nFunction: {func_name}\n")
+            f.write(f"Is Definition: {cursor.is_definition()}\n")
+            f.write(f"Location: {cursor.location.file}:{cursor.location.line}:{cursor.location.column}\n")
+            f.write(f"Return Type: {cursor.result_type.spelling}\n")
+            f.write(f"Parameters:\n")
+            for param in cursor.get_arguments():
+                f.write(f"  - {param.spelling}: {param.type.spelling}\n")
+            f.write(f"Extent: {cursor.extent.start.line}-{cursor.extent.end.line}\n")
+            f.write("---\n")
+        
+        # 处理函数定义和声明
+        self.functions = getattr(self, 'functions', {})
+        
+        # 检查是否是函数定义
+        is_def = cursor.is_definition()
+        
+        # 检查是否有函数体
+        has_body = self._check_function_has_body(cursor)
+        
+        # 如果是函数定义且有函数体
+        if is_def and has_body:
+            self._process_function_definition(cursor, func_name)
+        else:
+            self._process_function_declaration_only(cursor, func_name)
+    
+    def _check_function_has_body(self, cursor):
+        """检查函数是否有函数体"""
+        has_body = False
+        # 调试特定函数
+        is_timer_pause = cursor.spelling == "timer_pause"
+        
+        if cursor.is_definition():
+            # 如果是timer_pause函数,打印调试信息
+
+            # 遍历所有子节点查找函数体相关节点
+            for child in cursor.get_children():
+                # 检查复合语句(标准函数体)
+                if child.kind == clang.cindex.CursorKind.COMPOUND_STMT:
+                    has_body = True
+                    if is_timer_pause:
+                        print("Found COMPOUND_STMT body")
+                    break
+                # 检查内联函数体
+                elif child.kind == clang.cindex.CursorKind.UNEXPOSED_EXPR:
+                    for subchild in child.get_children():
+                        if is_timer_pause:
+                            print(f"  Subnode kind: {subchild.kind}")
+                        if subchild.kind == clang.cindex.CursorKind.COMPOUND_STMT:
+                            has_body = True
+                            if is_timer_pause:
+                                print("Found inline function body")
+                            break
+                # 检查宏展开的函数体
+                elif child.kind == clang.cindex.CursorKind.MACRO_INSTANTIATION:
+                    has_body = True
+                    if is_timer_pause:
+                        print("Found macro body")
+                    break
+                if has_body:
+                    break
+
+            if is_timer_pause:
+                print(f"Has body: {has_body}\n")
                 
-            # 检查是否是堆分配变量
-            def check_heap_allocation(node):
-                if node is None:
-                    return False
-                    
-                # 检查函数调用表达式
-                if node.kind == clang.cindex.CursorKind.CALL_EXPR:
-                    # 获取函数名
-                    func_name = node.spelling.lower()
-                    
-                    # 检查标准内存分配函数
-                    if node.spelling in ['malloc', 'calloc', 'realloc', 'aligned_alloc', 'valloc', 'pvalloc']:
-                        return True
-                        
-                    # 检查自定义内存分配函数 - 更全面的模式匹配
-                    memory_alloc_patterns = ['alloc', 'new', 'create', 'dup', 'clone', 'copy']
-                    for pattern in memory_alloc_patterns:
-                        if pattern in func_name:
-                            return True
-                            
-                # 检查类型转换表达式
-                elif node.kind == clang.cindex.CursorKind.CSTYLE_CAST_EXPR:
-                    # 递归检查类型转换表达式中的所有子节点
-                    for child in node.get_children():
-                        if check_heap_allocation(child):
-                            return True
-                            
-                # 检查括号表达式
-                elif node.kind == clang.cindex.CursorKind.PAREN_EXPR:
-                    for child in node.get_children():
-                        if check_heap_allocation(child):
-                            return True
-                            
-                # 检查一元操作符 (如 *ptr)
-                elif node.kind == clang.cindex.CursorKind.UNARY_OPERATOR:
-                    for child in node.get_children():
-                        if check_heap_allocation(child):
-                            return True
-                            
-                # 检查条件表达式 (三元运算符)
-                elif node.kind == clang.cindex.CursorKind.CONDITIONAL_OPERATOR:
-                    for child in node.get_children():
-                        if check_heap_allocation(child):
-                            return True
-                            
-                # 检查复合语句
-                elif node.kind == clang.cindex.CursorKind.COMPOUND_STMT:
-                    for child in node.get_children():
-                        if check_heap_allocation(child):
-                            return True
-                            
-                return False
+        return has_body
+    
+    def _process_function_definition(self, cursor, func_name):
+        """处理函数定义"""
+        # 记录函数信息，如果已存在声明则更新为定义
+        func_info = {
+            'name': func_name,
+            'start_line': cursor.extent.start.line,
+            'end_line': cursor.extent.end.line,
+            'return_type': cursor.result_type.spelling,
+            'parameters': [],
+            'local_variables': [],
+            'calls': [],
+            'location': f"{cursor.location.file}:{cursor.location.line}:{cursor.location.column}",
+            'is_declaration': False,
+            'has_body': True
+        }
+        
+        # 如果已存在函数信息，保留某些字段
+        if func_name in self.functions:
+            existing_func = self.functions[func_name]
+            if existing_func.get('calls'):
+                func_info['calls'] = existing_func['calls']
+            if existing_func.get('local_variables'):
+                func_info['local_variables'] = existing_func['local_variables']
+        
+        self.functions[func_name] = func_info
+        
+        # 处理函数参数
+        for param in cursor.get_arguments():
+            param_info = {
+                'name': param.spelling,
+                'type': param.type.spelling,
+                'location': f"{param.location.file}:{param.location.line}:{param.location.column}"
+            }
+            self.functions[func_name]['parameters'].append(param_info)
+        
+        # 递归处理函数体
+        for child in cursor.get_children():
+            self._parse_code_elements(child, func_name)
+    
+    def _process_function_declaration_only(self, cursor, func_name):
+        """处理函数声明（非定义）"""
+        # 处理函数声明，但不覆盖已有的函数定义
+        if func_name not in self.functions or self.functions[func_name].get('is_declaration', False):
+            self.functions[func_name] = {
+                'name': func_name,
+                'is_declaration': True,
+                'return_type': cursor.result_type.spelling,
+                'parameters': [],
+                'location': f"{cursor.location.file}:{cursor.location.line}:{cursor.location.column}",
+                'has_body': False
+            }
+            # 处理函数参数
+            for param in cursor.get_arguments():
+                param_info = {
+                    'name': param.spelling,
+                    'type': param.type.spelling,
+                    'location': f"{param.location.file}:{param.location.line}:{param.location.column}"
+                }
+                self.functions[func_name]['parameters'].append(param_info)
+    
+    def _process_variable_declaration(self, cursor, debug_file, parent_func=None):
+        """处理变量声明"""
+        var_name = cursor.spelling
+        var_type = cursor.type.spelling
+        storage_class = cursor.storage_class
+        
+        # 记录变量分析信息到调试文件
+        with open(debug_file, 'a', encoding='utf-8') as f:
+            f.write(f"\nVariable: {var_name}\n")
+            f.write(f"Type: {var_type}\n")
+            f.write(f"Storage Class: {storage_class}\n")
+            f.write(f"Location: {cursor.location.file}:{cursor.location.line}:{cursor.location.column}\n")
+            f.write(f"Parent Function: {parent_func}\n")
+            f.write(f"Is Global: {cursor.semantic_parent.kind == clang.cindex.CursorKind.TRANSLATION_UNIT}\n")
+            f.write(f"Is Static: {storage_class == clang.cindex.StorageClass.STATIC}\n")
+            f.write("---\n")
+        
+        # 记录变量信息
+        var_info = {
+            'type': var_type,
+            'storage': storage_class,
+            'location': f"{cursor.location.file}:{cursor.location.line}:{cursor.location.column}",
+            'is_pointer': '*' in var_type,
+            'references': [],
+            'is_global': cursor.semantic_parent.kind == clang.cindex.CursorKind.TRANSLATION_UNIT,
+            'is_static': storage_class == clang.cindex.StorageClass.STATIC,
+            'is_heap': False,
+            'parent_function': parent_func
+        }
+        
+        # 只有全局变量和静态变量才添加到variables集合中
+        if cursor.semantic_parent.kind == clang.cindex.CursorKind.TRANSLATION_UNIT or \
+           storage_class == clang.cindex.StorageClass.STATIC:
+            self.variables[var_name] = var_info
+        
+        # 如果是函数内的局部变量，添加到函数的局部变量列表
+        if parent_func and parent_func in self.functions:
+            self.functions[parent_func]['local_variables'].append({
+                'name': var_name,
+                'type': var_type,
+                'location': var_info['location']
+            })
+        
+        # 识别全局变量和静态变量
+        if storage_class == clang.cindex.StorageClass.STATIC:
+            self.static_vars.add(var_name)
+            # 如果是文件作用域的静态变量，也将其添加到全局变量集合中
+            if cursor.semantic_parent.kind == clang.cindex.CursorKind.TRANSLATION_UNIT:
+                self.global_vars.add(var_name)
+        elif cursor.semantic_parent.kind == clang.cindex.CursorKind.TRANSLATION_UNIT:
+            self.global_vars.add(var_name)
+        
+        # 检查是否是堆分配变量
+        if var_info['is_pointer']:
+            self._check_heap_variable(cursor, var_name)
+    
+    def _check_heap_allocation(self, node):
+        """检查节点是否表示堆内存分配"""
+        if node is None:
+            return False
             
-            # 检查变量是否为指针类型
-            is_pointer = '*' in var_type
+        # 检查函数调用表达式
+        if node.kind == clang.cindex.CursorKind.CALL_EXPR:
+            # 获取函数名
+            func_name = node.spelling.lower()
             
-            # 如果是指针类型，默认检查更严格
-            if is_pointer:
-                # 检查初始化表达式
-                for child in cursor.get_children():
-                    # 检查类型转换表达式
-                    if child.kind == clang.cindex.CursorKind.CSTYLE_CAST_EXPR:
-                        for subchild in child.get_children():
-                            if check_heap_allocation(subchild):
-                                self.heap_vars.add(var_name)
-                                # 确保变量在字典中存在
-                                if var_name in self.variables:
-                                    self.variables[var_name]['is_heap'] = True
-                                break
-                    # 直接检查内存分配函数调用
-                    elif check_heap_allocation(child):
+            # 检查标准内存分配函数
+            if node.spelling in ['malloc', 'calloc', 'realloc', 'aligned_alloc', 'valloc', 'pvalloc']:
+                return True
+                
+            # 检查自定义内存分配函数 - 更全面的模式匹配
+            memory_alloc_patterns = ['alloc', 'new', 'create', 'dup', 'clone', 'copy']
+            for pattern in memory_alloc_patterns:
+                if pattern in func_name:
+                    return True
+                    
+        # 检查类型转换表达式
+        elif node.kind == clang.cindex.CursorKind.CSTYLE_CAST_EXPR:
+            # 递归检查类型转换表达式中的所有子节点
+            for child in node.get_children():
+                if self._check_heap_allocation(child):
+                    return True
+                    
+        # 检查一元操作符 (如 *ptr)
+        elif node.kind == clang.cindex.CursorKind.UNARY_OPERATOR:
+            for child in node.get_children():
+                if self._check_heap_allocation(child):
+                    return True
+                    
+        # 检查条件表达式 (三元运算符)
+        elif node.kind == clang.cindex.CursorKind.CONDITIONAL_OPERATOR:
+            for child in node.get_children():
+                if self._check_heap_allocation(child):
+                    return True
+                    
+        # 检查复合语句
+        elif node.kind == clang.cindex.CursorKind.COMPOUND_STMT:
+            for child in node.get_children():
+                if self._check_heap_allocation(child):
+                    return True
+                    
+        return False
+    
+    def _check_heap_variable(self, cursor, var_name):
+        """检查变量是否是堆分配变量"""
+        # 检查初始化表达式
+        for child in cursor.get_children():
+            # 检查类型转换表达式
+            if child.kind == clang.cindex.CursorKind.CSTYLE_CAST_EXPR:
+                for subchild in child.get_children():
+                    if self._check_heap_allocation(subchild):
                         self.heap_vars.add(var_name)
                         # 确保变量在字典中存在
                         if var_name in self.variables:
                             self.variables[var_name]['is_heap'] = True
                         break
-                    # 检查赋值表达式
-                    elif child.kind == clang.cindex.CursorKind.BINARY_OPERATOR:
-                        for subchild in child.get_children():
-                            if check_heap_allocation(subchild):
-                                self.heap_vars.add(var_name)
-                                # 确保变量在字典中存在
-                                if var_name in self.variables:
-                                    self.variables[var_name]['is_heap'] = True
-                                break
-                    # 检查函数调用中的内存分配
-                    elif child.kind == clang.cindex.CursorKind.CALL_EXPR:
-                        if check_heap_allocation(child):
-                            self.heap_vars.add(var_name)
-                            # 确保变量在字典中存在
-                            if var_name in self.variables:
-                                self.variables[var_name]['is_heap'] = True
-                            break
+            # 直接检查内存分配函数调用
+            elif self._check_heap_allocation(child):
+                self.heap_vars.add(var_name)
+                # 确保变量在字典中存在
+                if var_name in self.variables:
+                    self.variables[var_name]['is_heap'] = True
+                break
+            # 检查赋值表达式
+            elif child.kind == clang.cindex.CursorKind.BINARY_OPERATOR:
+                for subchild in child.get_children():
+                    if self._check_heap_allocation(subchild):
+                        self.heap_vars.add(var_name)
+                        # 确保变量在字典中存在
+                        if var_name in self.variables:
+                            self.variables[var_name]['is_heap'] = True
+                        break
+            # 检查函数调用中的内存分配
+            elif child.kind == clang.cindex.CursorKind.CALL_EXPR:
+                if self._check_heap_allocation(child):
+                    self.heap_vars.add(var_name)
+                    # 确保变量在字典中存在
+                    if var_name in self.variables:
+                        self.variables[var_name]['is_heap'] = True
+                    break
         
-        # 递归处理子节点
+        return False
+    
+    def _check_heap_allocation_extended(self, node):
+        """扩展的堆内存分配检查函数"""
+        if node is None:
+            return False
+            
+        # 检查括号表达式
+        if node.kind == clang.cindex.CursorKind.PAREN_EXPR:
+            for child in node.get_children():
+                if self._check_heap_allocation(child):
+                    return True
+                    
+        # 检查一元操作符 (如 *ptr)
+        elif node.kind == clang.cindex.CursorKind.UNARY_OPERATOR:
+            for child in node.get_children():
+                if self._check_heap_allocation(child):
+                    return True
+                    
+        # 检查条件表达式 (三元运算符)
+        elif node.kind == clang.cindex.CursorKind.CONDITIONAL_OPERATOR:
+            for child in node.get_children():
+                if self._check_heap_allocation(child):
+                    return True
+                    
+        # 检查复合语句
+        elif node.kind == clang.cindex.CursorKind.COMPOUND_STMT:
+            for child in node.get_children():
+                if self._check_heap_allocation(child):
+                    return True
+                    
+        return False
+    
+    def _check_heap_variable(self, cursor, var_name):
+        """检查变量是否是堆分配变量"""
+        # 检查初始化表达式
         for child in cursor.get_children():
-            self._find_variables(child, parent_func)
+            # 检查类型转换表达式
+            if child.kind == clang.cindex.CursorKind.CSTYLE_CAST_EXPR:
+                for subchild in child.get_children():
+                    if self._check_heap_allocation(subchild):
+                        self.heap_vars.add(var_name)
+                        # 确保变量在字典中存在
+                        if var_name in self.variables:
+                            self.variables[var_name]['is_heap'] = True
+                        break
+            # 直接检查内存分配函数调用
+            elif self._check_heap_allocation(child):
+                self.heap_vars.add(var_name)
+                # 确保变量在字典中存在
+                if var_name in self.variables:
+                    self.variables[var_name]['is_heap'] = True
+                break
+            # 检查赋值表达式
+            elif child.kind == clang.cindex.CursorKind.BINARY_OPERATOR:
+                for subchild in child.get_children():
+                    if self._check_heap_allocation(subchild):
+                        self.heap_vars.add(var_name)
+                        # 确保变量在字典中存在
+                        if var_name in self.variables:
+                            self.variables[var_name]['is_heap'] = True
+                        break
+            # 检查函数调用中的内存分配
+            elif child.kind == clang.cindex.CursorKind.CALL_EXPR:
+                if self._check_heap_allocation(child):
+                    self.heap_vars.add(var_name)
+                    # 确保变量在字典中存在
+                    if var_name in self.variables:
+                        self.variables[var_name]['is_heap'] = True
+                    break
     
     def _build_cfg_dfg(self, cursor, parent_func=None):
         """构建控制流图和数据流图"""
