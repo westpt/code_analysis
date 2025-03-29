@@ -429,7 +429,7 @@ class CCodeAnalyzer:
         return self
     
     def _dump_ast(self, cursor, file, level=0):
-        """将AST节点信息输出到文件"""
+        """将AST节点信息输出到文件,不进行相关分析"""
         # 输出当前节点信息
         indent = '  ' * level
         file.write(f"{indent}Node: {cursor.kind.name}\n")
