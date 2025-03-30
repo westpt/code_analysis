@@ -486,16 +486,21 @@ class CCodeAnalyzer:
             self._dump_ast(child, file, level + 1)
     
     def _parse_code_elements(self, cursor, parent_func=None):
-        """递归查找所有变量声明"""
+        """递归查找所有代码元素，包括函数声明、变量声明和函数调用"""
         # 创建函数定义调试文件
         temp_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'temp')
         func_debug_file = os.path.join(temp_dir, 'function_definitions.debug')
         var_debug_file = os.path.join(temp_dir, 'variable_analysis.debug')
+        call_debug_file = os.path.join(temp_dir, 'function_calls.debug')
         
         if cursor.kind == clang.cindex.CursorKind.FUNCTION_DECL:
             self._process_function_declaration(cursor, func_debug_file, parent_func)
         elif cursor.kind == clang.cindex.CursorKind.VAR_DECL:
             self._process_variable_declaration(cursor, var_debug_file, parent_func)
+        elif cursor.kind == clang.cindex.CursorKind.CALL_EXPR and parent_func:
+            self._process_function_call(cursor, call_debug_file, parent_func)
+        elif cursor.kind == clang.cindex.CursorKind.BINARY_OPERATOR and parent_func:
+            self._process_data_flow(cursor, parent_func)
         
         # 递归处理子节点
         for child in cursor.get_children():
@@ -529,6 +534,29 @@ class CCodeAnalyzer:
         # 如果是函数定义且有函数体
         if is_def and has_body:
             self._process_function_definition(cursor, func_name)
+            
+            # 添加函数节点到控制流图
+            self.cfg.add_node(func_name, type='function', id=func_name, location=f"{cursor.location.file}:{cursor.location.line}:{cursor.location.column}")
+            
+            # 处理函数参数，添加到数据流图
+            for param in cursor.get_arguments():
+                param_name = param.spelling
+                param_type = param.type.spelling
+                if param_name not in self.variables:
+                    self.variables[param_name] = {
+                        'type': param_type,
+                        'storage': 'StorageClass.NONE',
+                        'location': f"{param.location.file}:{param.location.line}:{param.location.column}",
+                        'is_pointer': '*' in param_type,
+                        'references': [],
+                        'is_global': False,
+                        'is_static': False,
+                        'is_heap': False,
+                        'parent_function': func_name
+                    }
+                # 添加参数到数据流图
+                self.dfg.add_node(param_name, type='parameter')
+                self.dfg.add_edge(param_name, func_name, type='parameter')
         else:
             self._process_function_declaration_only(cursor, func_name)
     
@@ -632,6 +660,158 @@ class CCodeAnalyzer:
                     'location': f"{param.location.file}:{param.location.line}:{param.location.column}"
                 }
                 self.functions[func_name]['parameters'].append(param_info)
+                
+    def _process_function_call(self, cursor, debug_file, parent_func):
+        """处理函数调用表达式"""
+        called_func = cursor.spelling
+        
+        if not called_func or not parent_func:
+            return
+            
+        # 记录函数调用信息到调试文件
+        with open(debug_file, 'a', encoding='utf-8') as f:
+            f.write(f"\nFunction Call: {called_func}\n")
+            f.write(f"Called from: {parent_func}\n")
+            f.write(f"Location: {cursor.location.file}:{cursor.location.line}:{cursor.location.column}\n")
+            f.write(f"Arguments:\n")
+            for arg in cursor.get_arguments():
+                f.write(f"  - {arg.spelling}\n")
+            f.write("---\n")
+        
+        # 添加函数调用边到控制流图
+        self.cfg.add_edge(parent_func, called_func)
+        
+        # 记录函数调用信息
+        call_info = {
+            'function': called_func,
+            'caller': parent_func,
+            'location': f"{cursor.location.file}:{cursor.location.line}:{cursor.location.column}",
+            'arguments': []
+        }
+        
+        # 分析函数调用参数
+        args = list(cursor.get_arguments())
+        for arg in args:
+            if arg.kind == clang.cindex.CursorKind.UNEXPOSED_EXPR:
+                # 处理字面量参数
+                for child in arg.get_children():
+                    if child.kind == clang.cindex.CursorKind.STRING_LITERAL:
+                        call_info['arguments'].append(child.spelling)
+                    elif child.kind == clang.cindex.CursorKind.INTEGER_LITERAL:
+                        call_info['arguments'].append(str(child.spelling))
+            elif arg.kind == clang.cindex.CursorKind.DECL_REF_EXPR:
+                # 处理变量参数
+                var_name = arg.spelling
+                call_info['arguments'].append(var_name)
+                if var_name in self.variables:
+                    # 添加到数据流图
+                    self.dfg.add_edge(var_name, called_func, type='argument')
+                    
+                    # 记录变量引用
+                    self.variables[var_name]['references'].append({
+                        'function': called_func,
+                        'as_argument': True,
+                        'location': f"{arg.location.file}:{arg.location.line}:{arg.location.column}"
+                    })
+        
+        # 记录返回值
+        parent = cursor.semantic_parent
+        while parent:
+            if parent.kind == clang.cindex.CursorKind.VAR_DECL:
+                call_info['return_value'] = parent.spelling
+                # 如果返回值赋给了变量，添加到数据流图
+                if 'return_value' in call_info and call_info['return_value'] in self.variables:
+                    self.dfg.add_edge(called_func, call_info['return_value'], type='return')
+                break
+            parent = parent.semantic_parent
+        
+        # 添加到函数调用列表
+        self.function_calls.append(call_info)
+        
+        # 更新调用者函数的calls列表
+        if parent_func in self.functions:
+            if 'calls' not in self.functions[parent_func]:
+                self.functions[parent_func]['calls'] = []
+            self.functions[parent_func]['calls'].append({
+                'function': called_func,
+                'location': call_info['location'],
+                'arguments': call_info['arguments']
+            })
+            
+        # 检查是否是内存分配函数
+        memory_alloc_patterns = ['malloc', 'calloc', 'realloc', 'aligned_alloc', 'valloc', 'pvalloc', 'alloc', 'new', 'create', 'dup', 'clone', 'copy']
+        is_memory_alloc = False
+        
+        # 检查是否是标准内存分配函数
+        if called_func in ['malloc', 'calloc', 'realloc', 'aligned_alloc', 'valloc', 'pvalloc']:
+            is_memory_alloc = True
+        else:
+            # 检查是否是自定义内存分配函数
+            called_func_lower = called_func.lower()
+            for pattern in memory_alloc_patterns:
+                if pattern in called_func_lower:
+                    is_memory_alloc = True
+                    break
+                    
+        if is_memory_alloc and 'return_value' in call_info:
+            var_name = call_info['return_value']
+            if var_name in self.variables:
+                self.heap_vars.add(var_name)
+                self.variables[var_name]['is_heap'] = True
+                
+    def _process_data_flow(self, cursor, parent_func):
+        """处理数据流相关的表达式，如赋值操作"""
+        # 处理赋值等二元操作
+        lhs = None
+        rhs = None
+        
+        for child in cursor.get_children():
+            if not lhs:
+                lhs = child
+            else:
+                rhs = child
+                break
+        
+        if lhs and rhs:
+            if lhs.kind == clang.cindex.CursorKind.DECL_REF_EXPR:
+                lhs_name = lhs.spelling
+                
+                # 记录变量赋值信息
+                if lhs_name in self.variables:
+                    # 检查右侧是否是变量引用
+                    if rhs.kind == clang.cindex.CursorKind.DECL_REF_EXPR:
+                        rhs_name = rhs.spelling
+                        if rhs_name in self.variables:
+                            # 添加到数据流图
+                            self.dfg.add_edge(rhs_name, lhs_name, type='assignment')
+                            
+                            # 记录变量引用
+                            self.variables[rhs_name]['references'].append({
+                                'assigned_to': lhs_name,
+                                'location': f"{rhs.location.file}:{rhs.location.line}:{rhs.location.column}",
+                                'in_function': parent_func
+                            })
+                    
+                    # 检查右侧是否是函数调用
+                    elif rhs.kind == clang.cindex.CursorKind.CALL_EXPR or self._find_call_expr(rhs):
+                        # 函数调用的返回值赋给变量，在_process_function_call中处理
+                        pass
+                    
+                    # 检查右侧是否是内存分配
+                    elif self._check_heap_allocation(rhs):
+                        self.heap_vars.add(lhs_name)
+                        self.variables[lhs_name]['is_heap'] = True
+                        
+    def _find_call_expr(self, node):
+        """递归查找节点中的函数调用表达式"""
+        if node.kind == clang.cindex.CursorKind.CALL_EXPR:
+            return True
+            
+        for child in node.get_children():
+            if self._find_call_expr(child):
+                return True
+                
+        return False
     
     def _process_variable_declaration(self, cursor, debug_file, parent_func=None):
         """处理变量声明"""
@@ -1259,8 +1439,8 @@ class CCodeAnalyzer:
                     for name, info in self.variables.items()
                 },
                 'function_calls': [
-                    {'caller': str(caller), 'callee': str(callee)}
-                    for caller, callee in self.function_calls
+                    {'caller': str(call_info['caller']), 'callee': str(call_info['function'])}
+                    for call_info in self.function_calls
                 ],
                 'control_flow': serialize_graph(self.cfg),
                 'data_flow': serialize_graph(self.dfg),
