@@ -42,16 +42,62 @@ class CCodeAnalyzer:
         self.include_paths = include_paths or []
         self.index = clang.cindex.Index.create()
         self.cfg = nx.DiGraph()  # 控制流图
-        self.dfg = nx.DiGraph()  # 数据流图
+        self.global_dfg = nx.DiGraph()  # 全局数据流图（函数间）
         self.variables = {}  # 变量信息
         self.global_vars = set()  # 全局变量
         self.static_vars = set()  # 静态变量
         self.heap_vars = set()  # 堆变量
         self.function_calls = []  # 函数调用
         self.business_logic = nx.DiGraph()  # 业务逻辑图
+        self.functions = {}
     
     def analyze(self):
         """执行完整的代码分析"""
+        # 初始化日志和临时目录
+        temp_dir, parse_log_file = self._initialize_logging()
+                
+        # 处理每个源文件
+        for file_path in self.files:
+            # 构建基本编译参数
+            args = self._build_basic_compile_args(file_path, parse_log_file)
+            
+            # 记录文件信息和内容
+            self._log_file_info(file_path, args, parse_log_file)
+            
+            # 解析翻译单元
+            try:
+                # 添加标准编译选项
+                args = self._add_standard_compile_options(args)
+                
+                # 添加标准库头文件路径
+                args = self._add_standard_include_paths(args, temp_dir, parse_log_file)
+                
+                # 记录最终编译参数
+                with open(parse_log_file, 'a', encoding='utf-8') as log_f:
+                    log_f.write(f"最终编译参数: {args}\n")
+                
+                # 解析源文件
+                tu = self._parse_translation_unit(file_path, args, parse_log_file)
+                
+                if tu:
+                    # 处理解析结果
+                    self._process_translation_unit(tu, file_path, temp_dir, args, parse_log_file)
+                else:
+                    error_msg = f"Warning: Failed to parse {file_path}"
+                    print(error_msg)
+                    with open(parse_log_file, 'a', encoding='utf-8') as log_f:
+                        log_f.write(f"{error_msg}\n")
+            except Exception as e:
+                self._handle_parse_exception(e, file_path, args, parse_log_file)
+                continue
+        
+        # 完成分析
+        self._track_heap_variables()
+        self._build_business_logic()
+        return self
+        
+    def _initialize_logging(self):
+        """初始化日志和临时目录"""
         # 创建temp目录（如果不存在）
         temp_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'temp')
         os.makedirs(temp_dir, exist_ok=True)
@@ -71,364 +117,368 @@ class CCodeAnalyzer:
             log_f.write(f"clang模块路径: {clang.__file__}\n")
             log_f.write(f"clang.cindex模块路径: {clang.cindex.__file__}\n\n")
         
-        # 初始化functions属性，避免AttributeError
-        self.functions = {}
+        return temp_dir, parse_log_file
         
-        for file_path in self.files:
-            # 准备编译参数，包括包含路径
-            args = []
+    def _build_basic_compile_args(self, file_path, parse_log_file):
+        """构建基本编译参数"""
+        args = []
+        
+        # 添加源文件所在目录作为include路径
+        file_dir = os.path.dirname(file_path)
+        if file_dir:
+            args.append(f'-I{file_dir}')
             
-            # 添加源文件所在目录作为include路径
-            file_dir = os.path.dirname(file_path)
-            if file_dir:
-                args.append(f'-I{file_dir}')
-                
-                # 添加源文件所在目录的父目录作为include路径（处理相对路径的include）
-                parent_dir = os.path.dirname(file_dir)
-                if parent_dir:
-                    args.append(f'-I{parent_dir}')
+            # 添加源文件所在目录的父目录作为include路径（处理相对路径的include）
+            parent_dir = os.path.dirname(file_dir)
+            if parent_dir:
+                args.append(f'-I{parent_dir}')
+        
+        # 添加用户指定的include路径
+        for include_path in self.include_paths:
+            args.append(f'-I{include_path}')
             
-            # 添加用户指定的include路径
-            for include_path in self.include_paths:
-                args.append(f'-I{include_path}')
+        return args
+    
+    def _log_file_info(self, file_path, args, parse_log_file):
+        """记录文件信息和内容"""
+        with open(parse_log_file, 'a', encoding='utf-8') as log_f:
+            log_f.write(f"\n解析文件: {file_path}\n")
+            log_f.write(f"编译参数: {args}\n")
+            log_f.write(f"文件是否存在: {os.path.exists(file_path)}\n")
+            log_f.write(f"文件大小: {os.path.getsize(file_path) if os.path.exists(file_path) else 'N/A'}\n")
             
-            # 记录当前文件的解析参数 - 使用独立的with块
-            with open(parse_log_file, 'a', encoding='utf-8') as log_f:
-                log_f.write(f"\n解析文件: {file_path}\n")
-                log_f.write(f"编译参数: {args}\n")
-                log_f.write(f"文件是否存在: {os.path.exists(file_path)}\n")
-                log_f.write(f"文件大小: {os.path.getsize(file_path) if os.path.exists(file_path) else 'N/A'}\n")
-                
-                # 检查文件内容的前几行
-                if os.path.exists(file_path):
-                    try:
-                        with open(file_path, 'r', encoding='utf-8') as f:
-                            first_lines = [next(f) for _ in range(5) if f]
-                            log_f.write(f"文件前5行:\n{''.join(first_lines)}\n")
-                            
-                            # 检查include语句
-                            f.seek(0)
-                            include_lines = [line for line in f if '#include' in line]
-                            if include_lines:
-                                log_f.write(f"Include语句:\n{''.join(include_lines)}\n")
-                                
-                                # 检查每个include文件是否存在
-                                for inc_line in include_lines:
-                                    inc_path = inc_line.split('#include')[1].strip()
-                                    if '"' in inc_path:
-                                        # 相对路径include
-                                        inc_file = inc_path.strip('"').strip('<>').strip()
-                                        # 检查相对于当前文件目录的路径
-                                        rel_path = os.path.join(file_dir, inc_file)
-                                        log_f.write(f"  检查include文件: {inc_file}\n")
-                                        log_f.write(f"  相对路径: {rel_path}, 存在: {os.path.exists(rel_path)}\n")
-                                        # 检查相对于父目录的路径
-                                        if parent_dir:
-                                            parent_path = os.path.join(parent_dir, inc_file)
-                                            log_f.write(f"  父目录路径: {parent_path}, 存在: {os.path.exists(parent_path)}\n")
-                    except Exception as e:
-                        log_f.write(f"读取文件内容失败: {e}\n")
-            
-            # 解析翻译单元 - 使用独立的try-except块和独立的with块
-            try:
-                # 添加更多编译选项以提高兼容性
-                args.extend(['-std=c99', '-D__STDC_LIMIT_MACROS', '-D__STDC_CONSTANT_MACROS'])
-                
-                # 添加标准C库头文件路径
-                # 尝试添加常见的stdint.h和stdlib.h所在路径
-                if sys.platform.startswith('win'):
-                    # Windows平台常见的LLVM/Clang包含路径
-                    possible_include_paths = [
-                        'C:/Program Files/LLVM/lib/clang/*/include',
-                        'C:/LLVM/lib/clang/*/include',
-                        'D:/Program Files/LLVM/lib/clang/*/include',
-                        'D:/LLVM/lib/clang/*/include',
-                        # 添加MinGW路径
-                        'C:/MinGW/include',
-                        'C:/Program Files/MinGW/include',
-                        'C:/msys64/mingw64/include',
-                        # 添加Visual Studio路径
-                        'C:/Program Files/Microsoft Visual Studio/*/VC/Tools/MSVC/*/include',
-                        'C:/Program Files (x86)/Microsoft Visual Studio/*/VC/Tools/MSVC/*/include',
-                        'C:/Program Files (x86)/Windows Kits/*/Include/*/ucrt'
-                    ]
-                    
-                    # 展开通配符并添加找到的路径
-                    for pattern in possible_include_paths:
-                        for path in glob.glob(pattern):
-                            if os.path.exists(path):
-                                args.append(f'-I{path}')
-                                with open(parse_log_file, 'a', encoding='utf-8') as log_f:
-                                    log_f.write(f"添加标准库头文件路径: {path}\n")
-                    
-                    # 创建临时stdlib.h文件（如果需要）
-                    temp_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'temp')
-                    temp_stdlib_path = os.path.join(temp_dir, 'stdlib.h')
-                    if not os.path.exists(temp_stdlib_path):
-                        try:
-                            with open(temp_stdlib_path, 'w', encoding='utf-8') as f:
-                                f.write("// 临时stdlib.h文件，用于解决标准库头文件缺失问题\n")
-                                f.write("#ifndef _STDLIB_H\n")
-                                f.write("#define _STDLIB_H\n\n")
-                                f.write("#include <stddef.h>\n\n")
-                                f.write("void* malloc(size_t size);\n")
-                                f.write("void free(void* ptr);\n")
-                                f.write("void* calloc(size_t num, size_t size);\n")
-                                f.write("void* realloc(void* ptr, size_t size);\n")
-                                f.write("int system(const char* command);\n")
-                                f.write("void exit(int status);\n\n")
-                                f.write("#endif /* _STDLIB_H */\n")
-                            args.append(f'-I{temp_dir}')
-                            with open(parse_log_file, 'a', encoding='utf-8') as log_f:
-                                log_f.write(f"创建并添加临时stdlib.h文件: {temp_stdlib_path}\n")
-                        except Exception as e:
-                            with open(parse_log_file, 'a', encoding='utf-8') as log_f:
-                                log_f.write(f"创建临时stdlib.h文件失败: {e}\n")
-                else:
-                    # Linux/macOS平台常见的包含路径
-                    possible_include_paths = [
-                        '/usr/include',
-                        '/usr/local/include',
-                        '/usr/lib/clang/*/include'
-                    ]
-                    
-                    for pattern in possible_include_paths:
-                        for path in glob.glob(pattern):
-                            if os.path.exists(path):
-                                args.append(f'-I{path}')
-                                with open(parse_log_file, 'a', encoding='utf-8') as log_f:
-                                    log_f.write(f"添加标准库头文件路径: {path}\n")
-                
-                # 记录最终编译参数
-                with open(parse_log_file, 'a', encoding='utf-8') as log_f:
-                    log_f.write(f"最终编译参数: {args}\n")
-                
-                # 使用详细的解析选项
-                options = clang.cindex.TranslationUnit.PARSE_DETAILED_PROCESSING_RECORD
-                
-                # 尝试使用不同的解析选项
+            # 检查文件内容的前几行
+            if os.path.exists(file_path):
                 try:
-                    with open(parse_log_file, 'a', encoding='utf-8') as log_f:
-                        log_f.write("尝试使用标准解析选项...\n")
-                    tu = self.index.parse(file_path, args, options=options)
-                except Exception as e1:
-                    with open(parse_log_file, 'a', encoding='utf-8') as log_f:
-                        log_f.write(f"标准解析失败: {e1}\n")
-                        log_f.write("尝试使用更宽松的解析选项...\n")
-                    try:
-                        # 添加更宽松的解析选项
-                        options |= clang.cindex.TranslationUnit.PARSE_INCOMPLETE
-                        tu = self.index.parse(file_path, args, options=options)
-                    except Exception as e2:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        first_lines = [next(f) for _ in range(5) if f]
+                        log_f.write(f"文件前5行:\n{''.join(first_lines)}\n")
+                        
+                        # 检查include语句
+                        f.seek(0)
+                        include_lines = [line for line in f if '#include' in line]
+                        if include_lines:
+                            log_f.write(f"Include语句:\n{''.join(include_lines)}\n")
+                            
+                            # 检查每个include文件是否存在
+                            file_dir = os.path.dirname(file_path)
+                            parent_dir = os.path.dirname(file_dir) if file_dir else None
+                            for inc_line in include_lines:
+                                inc_path = inc_line.split('#include')[1].strip()
+                                if '"' in inc_path:
+                                    # 相对路径include
+                                    inc_file = inc_path.strip('"').strip('<>').strip()
+                                    # 检查相对于当前文件目录的路径
+                                    rel_path = os.path.join(file_dir, inc_file)
+                                    log_f.write(f"  检查include文件: {inc_file}\n")
+                                    log_f.write(f"  相对路径: {rel_path}, 存在: {os.path.exists(rel_path)}\n")
+                                    # 检查相对于父目录的路径
+                                    if parent_dir:
+                                        parent_path = os.path.join(parent_dir, inc_file)
+                                        log_f.write(f"  父目录路径: {parent_path}, 存在: {os.path.exists(parent_path)}\n")
+                except Exception as e:
+                    log_f.write(f"读取文件内容失败: {e}\n")
+    
+    def _add_standard_compile_options(self, args):
+        """添加标准编译选项"""
+        # 添加更多编译选项以提高兼容性
+        args.extend(['-std=c99', '-D__STDC_LIMIT_MACROS', '-D__STDC_CONSTANT_MACROS'])
+        return args
+    
+    def _add_standard_include_paths(self, args, temp_dir, parse_log_file):
+        """添加标准库头文件路径"""
+        # 尝试添加常见的stdint.h和stdlib.h所在路径
+        if sys.platform.startswith('win'):
+            # Windows平台常见的LLVM/Clang包含路径
+            possible_include_paths = [
+                'C:/Program Files/LLVM/lib/clang/*/include',
+                'C:/LLVM/lib/clang/*/include',
+                'D:/Program Files/LLVM/lib/clang/*/include',
+                'D:/LLVM/lib/clang/*/include',
+                # 添加MinGW路径
+                'C:/MinGW/include',
+                'C:/Program Files/MinGW/include',
+                'C:/msys64/mingw64/include',
+                # 添加Visual Studio路径
+                'C:/Program Files/Microsoft Visual Studio/*/VC/Tools/MSVC/*/include',
+                'C:/Program Files (x86)/Microsoft Visual Studio/*/VC/Tools/MSVC/*/include',
+                'C:/Program Files (x86)/Windows Kits/*/Include/*/ucrt'
+            ]
+            
+            # 展开通配符并添加找到的路径
+            for pattern in possible_include_paths:
+                for path in glob.glob(pattern):
+                    if os.path.exists(path):
+                        args.append(f'-I{path}')
                         with open(parse_log_file, 'a', encoding='utf-8') as log_f:
-                            log_f.write(f"宽松解析也失败: {e2}\n")
-                            # 记录详细的异常信息
-                            import traceback
-                            log_f.write("异常堆栈:\n")
-                            log_f.write(traceback.format_exc())
-                            log_f.write("\n")
-                        raise e2
-                
-                if tu:
-                    # 记录解析成功信息
+                            log_f.write(f"添加标准库头文件路径: {path}\n")
+            
+            # 创建临时stdlib.h文件（如果需要）
+            temp_stdlib_path = os.path.join(temp_dir, 'stdlib.h')
+            if not os.path.exists(temp_stdlib_path):
+                try:
+                    with open(temp_stdlib_path, 'w', encoding='utf-8') as f:
+                        f.write("// 临时stdlib.h文件，用于解决标准库头文件缺失问题\n")
+                        f.write("#ifndef _STDLIB_H\n")
+                        f.write("#define _STDLIB_H\n\n")
+                        f.write("#include <stddef.h>\n\n")
+                        f.write("void* malloc(size_t size);\n")
+                        f.write("void free(void* ptr);\n")
+                        f.write("void* calloc(size_t num, size_t size);\n")
+                        f.write("void* realloc(void* ptr, size_t size);\n")
+                        f.write("int system(const char* command);\n")
+                        f.write("void exit(int status);\n\n")
+                        f.write("#endif /* _STDLIB_H */\n")
+                    args.append(f'-I{temp_dir}')
                     with open(parse_log_file, 'a', encoding='utf-8') as log_f:
-                        log_f.write(f"成功解析文件: {file_path}\n")
-                        log_f.write(f"诊断信息数量: {len(tu.diagnostics)}\n")
-                        
-                        # 记录所有诊断信息（增强版）
-                        if tu.diagnostics:
-                            log_f.write("诊断信息详情:\n")
-                            for i, diag in enumerate(tu.diagnostics):
-                                log_f.write(f"  [诊断 #{i+1}]\n")
-                                log_f.write(f"  - 严重性: {diag.severity}\n")
-                                log_f.write(f"  - 位置: {diag.location}\n")
-                                log_f.write(f"  - 拼写: {diag.spelling}\n")
-                                log_f.write(f"  - 类别: {diag.category_name}\n")
-                                
-                                # 添加更详细的位置信息
-                                if diag.location.file:
-                                    log_f.write(f"  - 文件: {diag.location.file.name}\n")
-                                    log_f.write(f"  - 行号: {diag.location.line}\n")
-                                    log_f.write(f"  - 列号: {diag.location.column}\n")
-                                    
-                                    # 尝试获取错误行的代码内容
-                                    try:
-                                        with open(diag.location.file.name, 'r', encoding='utf-8') as src_f:
-                                            lines = src_f.readlines()
-                                            if 0 <= diag.location.line-1 < len(lines):
-                                                error_line = lines[diag.location.line-1].rstrip()
-                                                log_f.write(f"  - 错误行内容: {error_line}\n")
-                                                # 添加指示错误位置的标记
-                                                marker = ' ' * (diag.location.column-1) + '^'
-                                                log_f.write(f"  - 错误位置: {marker}\n")
-                                    except Exception as e:
-                                        log_f.write(f"  - 无法读取错误行内容: {e}\n")
-                                
-                                # 添加更多诊断信息
-                                if hasattr(diag, 'option'):
-                                    log_f.write(f"  - 选项: {diag.option}\n")
-                                if hasattr(diag, 'disable_option'):
-                                    log_f.write(f"  - 禁用选项: {diag.disable_option}\n")
-                                if hasattr(diag, 'ranges') and diag.ranges:
-                                    log_f.write(f"  - 范围数量: {len(diag.ranges)}\n")
-                                    for j, range in enumerate(diag.ranges):
-                                        log_f.write(f"    范围 #{j+1}: {range.start.line}:{range.start.column} - {range.end.line}:{range.end.column}\n")
-                                if hasattr(diag, 'fixits') and diag.fixits:
-                                    log_f.write(f"  - 修复建议数量: {len(diag.fixits)}\n")
-                                    for j, fixit in enumerate(diag.fixits):
-                                        log_f.write(f"    修复建议 #{j+1}: {fixit.value}\n")
-                                
-                                # 如果诊断信息中包含'timer'，添加更多上下文
-                                if 'timer' in diag.spelling.lower():
-                                    log_f.write(f"  [发现timer相关错误!]\n")
-                                    log_f.write(f"  - 详细分析: 这可能与TimerSystem结构体或Timer结构体定义有关\n")
-                                    # 检查include路径是否正确
-                                    log_f.write(f"  - 当前include路径: {args}\n")
-                                    
-                                log_f.write("\n")
-                        
-                        # 记录翻译单元的基本信息（增强版）
-                        log_f.write(f"翻译单元拼写: {tu.spelling}\n")
-                        log_f.write(f"翻译单元游标类型: {tu.cursor.kind}\n")
-                        log_f.write(f"翻译单元游标拼写: {tu.cursor.spelling}\n")
-                        
-                        # 添加更多翻译单元信息
-                        log_f.write(f"翻译单元包含的文件数量: {len(list(tu.get_includes()))}\n")
-                        log_f.write("包含的文件列表:\n")
-                        for i, included in enumerate(tu.get_includes()):
-                            log_f.write(f"  {i+1}. {included.include.name} (来自 {included.source.name}:{included.location.line})\n")
-                        
-                        # 检查是否存在未解析的符号
-                        log_f.write("\n检查未解析的符号...\n")
-                        def check_unresolved_symbols(cursor, log_file):
-                            if cursor.kind == clang.cindex.CursorKind.UNEXPOSED_DECL:
-                                log_file.write(f"发现未解析声明: {cursor.spelling} 在 {cursor.location.file}:{cursor.location.line}:{cursor.location.column}\n")
-                            elif cursor.kind == clang.cindex.CursorKind.UNEXPOSED_EXPR:
-                                log_file.write(f"发现未解析表达式: {cursor.spelling} 在 {cursor.location.file}:{cursor.location.line}:{cursor.location.column}\n")
-                            
-                            # 检查引用但未定义的符号
-                            if cursor.kind == clang.cindex.CursorKind.DECL_REF_EXPR:
-                                referenced = cursor.referenced
-                                if referenced and referenced.kind == clang.cindex.CursorKind.UNEXPOSED_DECL:
-                                    log_file.write(f"引用未解析的符号: {cursor.spelling} 在 {cursor.location.file}:{cursor.location.line}:{cursor.location.column}\n")
-                                    log_file.write(f"  引用指向: {referenced.spelling} 类型: {referenced.kind}\n")
-                            
-                            # 递归检查子节点
-                            for child in cursor.get_children():
-                                check_unresolved_symbols(child, log_file)
-                        
-                        # 对翻译单元的根游标执行检查
-                        check_unresolved_symbols(tu.cursor, log_f)
-                    
-                    # 生成AST调试文件
-                    ast_debug_file = os.path.join(temp_dir, f'{os.path.basename(file_path)}.ast.debug')
-                    with open(ast_debug_file, 'w', encoding='utf-8') as f:
-                        self._dump_ast(tu.cursor, f)
-                    
-                    print(f"{tu.cursor.spelling} AST generated at {ast_debug_file}")   
-                    
-                    self._parse_code_elements(tu.cursor)
-                    self._build_cfg_dfg(tu.cursor)
-                else:
-                    error_msg = f"Warning: Failed to parse {file_path}"
-                    print(error_msg)
+                        log_f.write(f"创建并添加临时stdlib.h文件: {temp_stdlib_path}\n")
+                except Exception as e:
                     with open(parse_log_file, 'a', encoding='utf-8') as log_f:
-                        log_f.write(f"{error_msg}\n")
-            except Exception as e:
-                error_msg = f"Error parsing {file_path}: {e}"
-                print(error_msg)
-                
-                # 记录详细的异常信息 - 使用独立的with块
+                        log_f.write(f"创建临时stdlib.h文件失败: {e}\n")
+        else:
+            # Linux/macOS平台常见的包含路径
+            possible_include_paths = [
+                '/usr/include',
+                '/usr/local/include',
+                '/usr/lib/clang/*/include'
+            ]
+            
+            for pattern in possible_include_paths:
+                for path in glob.glob(pattern):
+                    if os.path.exists(path):
+                        args.append(f'-I{path}')
+                        with open(parse_log_file, 'a', encoding='utf-8') as log_f:
+                            log_f.write(f"添加标准库头文件路径: {path}\n")
+        
+        return args
+        
+    def _parse_translation_unit(self, file_path, args, parse_log_file):
+        """解析翻译单元"""
+        # 使用详细的解析选项
+        options = clang.cindex.TranslationUnit.PARSE_DETAILED_PROCESSING_RECORD
+        
+        # 尝试使用不同的解析选项
+        try:
+            with open(parse_log_file, 'a', encoding='utf-8') as log_f:
+                log_f.write("尝试使用标准解析选项...\n")
+            tu = self.index.parse(file_path, args, options=options)
+        except Exception as e1:
+            with open(parse_log_file, 'a', encoding='utf-8') as log_f:
+                log_f.write(f"标准解析失败: {e1}\n")
+                log_f.write("尝试使用更宽松的解析选项...\n")
+            try:
+                # 添加更宽松的解析选项
+                options |= clang.cindex.TranslationUnit.PARSE_INCOMPLETE
+                tu = self.index.parse(file_path, args, options=options)
+            except Exception as e2:
                 with open(parse_log_file, 'a', encoding='utf-8') as log_f:
-                    log_f.write(f"{error_msg}\n")
-                    # 记录异常堆栈
+                    log_f.write(f"宽松解析也失败: {e2}\n")
+                    # 记录详细的异常信息
                     import traceback
                     log_f.write("异常堆栈:\n")
                     log_f.write(traceback.format_exc())
                     log_f.write("\n")
-                    
-                    # 尝试获取更多关于错误的上下文信息
-                    log_f.write("错误上下文信息:\n")
-                    log_f.write(f"错误类型: {type(e).__name__}\n")
-                    log_f.write(f"错误字符串表示: {str(e)}\n")
-                    log_f.write(f"错误repr表示: {repr(e)}\n")
-                    
-                    # 特别处理'timer'相关错误
-                    if 'timer' in str(e).lower():
-                        log_f.write("\n[发现timer相关错误!]\n")
-                        log_f.write("进行深入分析...\n")
-                        
-                        # 检查文件内容
-                        log_f.write("检查文件内容:\n")
-                        try:
-                            with open(file_path, 'r', encoding='utf-8') as src_f:
-                                content = src_f.read()
-                                log_f.write(f"文件大小: {len(content)} 字节\n")
-                                
-                                # 检查关键结构体定义
-                                if 'TimerSystem' in content:
-                                    log_f.write("找到TimerSystem结构体引用\n")
-                                    # 提取结构体定义上下文
-                                    idx = content.find('TimerSystem')
-                                    start = max(0, idx - 100)
-                                    end = min(len(content), idx + 100)
-                                    log_f.write(f"上下文: ...{content[start:end]}...\n")
-                                else:
-                                    log_f.write("未找到TimerSystem结构体引用\n")
-                                
-                                # 检查include语句
-                                includes = [line for line in content.split('\n') if '#include' in line]
-                                log_f.write(f"Include语句: {includes}\n")
-                                
-                                # 检查是否正确包含timer.h
-                                timer_h_included = any('timer.h' in inc for inc in includes)
-                                log_f.write(f"是否包含timer.h: {timer_h_included}\n")
-                        except Exception as read_err:
-                            log_f.write(f"读取文件失败: {read_err}\n")
-                        
-                        # 检查include路径
-                        log_f.write("\n检查include路径:\n")
-                        log_f.write(f"编译参数: {args}\n")
-                        
-                        # 检查timer.h文件是否存在于include路径中
-                        for inc_path in args:
-                            if inc_path.startswith('-I'):
-                                path = inc_path[2:]
-                                timer_h_path = os.path.join(path, 'timer.h')
-                                log_f.write(f"检查路径: {timer_h_path}, 存在: {os.path.exists(timer_h_path)}\n")
-                                
-                                # 如果存在，检查文件内容
-                                if os.path.exists(timer_h_path):
-                                    try:
-                                        with open(timer_h_path, 'r', encoding='utf-8') as h_f:
-                                            h_content = h_f.read()
-                                            log_f.write(f"timer.h大小: {len(h_content)} 字节\n")
-                                            if 'TimerSystem' in h_content:
-                                                log_f.write("timer.h中找到TimerSystem结构体定义\n")
-                                            else:
-                                                log_f.write("timer.h中未找到TimerSystem结构体定义\n")
-                                    except Exception as h_err:
-                                        log_f.write(f"读取timer.h失败: {h_err}\n")
-                        
-                        # 检查相对路径include
-                        file_dir = os.path.dirname(file_path)
-                        rel_timer_h = os.path.join(file_dir, '../include/timer.h')
-                        log_f.write(f"检查相对路径: {rel_timer_h}, 存在: {os.path.exists(rel_timer_h)}\n")
-                        
-                        # 提供可能的解决方案
-                        log_f.write("\n可能的解决方案:\n")
-                        log_f.write("1. 确保timer.h文件在正确的include路径中\n")
-                        log_f.write("2. 检查TimerSystem结构体是否在timer.h中正确定义\n")
-                        log_f.write("3. 检查include语句是否使用了正确的相对路径\n")
-                        log_f.write("4. 尝试使用绝对路径而不是相对路径\n")
-                        log_f.write("5. 检查timer.h和timer.c中的结构体定义是否一致\n")
-                continue
+                raise e2
                 
-        self._track_heap_variables()
-        self._build_business_logic()
-        return self
+        return tu
+    
+    def _check_unresolved_symbols(self, cursor, log_file):
+        """检查未解析的符号"""
+        if cursor.kind == clang.cindex.CursorKind.UNEXPOSED_DECL:
+            log_file.write(f"发现未解析声明: {cursor.spelling} 在 {cursor.location.file}:{cursor.location.line}:{cursor.location.column}\n")
+        elif cursor.kind == clang.cindex.CursorKind.UNEXPOSED_EXPR:
+            log_file.write(f"发现未解析表达式: {cursor.spelling} 在 {cursor.location.file}:{cursor.location.line}:{cursor.location.column}\n")
+        
+        # 检查引用但未定义的符号
+        if cursor.kind == clang.cindex.CursorKind.DECL_REF_EXPR:
+            referenced = cursor.referenced
+            if referenced and referenced.kind == clang.cindex.CursorKind.UNEXPOSED_DECL:
+                log_file.write(f"引用未解析的符号: {cursor.spelling} 在 {cursor.location.file}:{cursor.location.line}:{cursor.location.column}\n")
+                log_file.write(f"  引用指向: {referenced.spelling} 类型: {referenced.kind}\n")
+        
+        # 递归检查子节点
+        for child in cursor.get_children():
+            self._check_unresolved_symbols(child, log_file)
+    
+    def _process_diagnostics(self, tu, file_path, args, parse_log_file):
+        # 记录解析成功信息
+        with open(parse_log_file, 'a', encoding='utf-8') as log_f:
+            log_f.write(f"成功解析文件: {file_path}\n")
+            """处理诊断信息"""
+            log_f.write(f"诊断信息数量: {len(tu.diagnostics)}\n")
+            
+            # 记录所有诊断信息（增强版）
+            if tu.diagnostics:
+                log_f.write("诊断信息详情:\n")
+                for i, diag in enumerate(tu.diagnostics):
+                    log_f.write(f"  [诊断 #{i+1}]\n")
+                    log_f.write(f"  - 严重性: {diag.severity}\n")
+                    log_f.write(f"  - 位置: {diag.location}\n")
+                    log_f.write(f"  - 拼写: {diag.spelling}\n")
+                    log_f.write(f"  - 类别: {diag.category_name}\n")
+                    
+                    # 添加更详细的位置信息
+                    if diag.location.file:
+                        log_f.write(f"  - 文件: {diag.location.file.name}\n")
+                        log_f.write(f"  - 行号: {diag.location.line}\n")
+                        log_f.write(f"  - 列号: {diag.location.column}\n")
+                        
+                        # 尝试获取错误行的代码内容
+                        try:
+                            with open(diag.location.file.name, 'r', encoding='utf-8') as src_f:
+                                lines = src_f.readlines()
+                                if 0 <= diag.location.line-1 < len(lines):
+                                    error_line = lines[diag.location.line-1].rstrip()
+                                    log_f.write(f"  - 错误行内容: {error_line}\n")
+                                    # 添加指示错误位置的标记
+                                    marker = ' ' * (diag.location.column-1) + '^'
+                                    log_f.write(f"  - 错误位置: {marker}\n")
+                        except Exception as e:
+                            log_f.write(f"  - 无法读取错误行内容: {e}\n")
+                    
+                    # 添加更多诊断信息
+                    if hasattr(diag, 'option'):
+                        log_f.write(f"  - 选项: {diag.option}\n")
+                    if hasattr(diag, 'disable_option'):
+                        log_f.write(f"  - 禁用选项: {diag.disable_option}\n")
+                    if hasattr(diag, 'ranges') and diag.ranges:
+                        log_f.write(f"  - 范围数量: {len(diag.ranges)}\n")
+                        for j, range in enumerate(diag.ranges):
+                            log_f.write(f"    范围 #{j+1}: {range.start.line}:{range.start.column} - {range.end.line}:{range.end.column}\n")
+                    if hasattr(diag, 'fixits') and diag.fixits:
+                        log_f.write(f"  - 修复建议数量: {len(diag.fixits)}\n")
+                        for j, fixit in enumerate(diag.fixits):
+                            log_f.write(f"    修复建议 #{j+1}: {fixit.value}\n")
+                    
+                    # 如果诊断信息中包含'timer'，添加更多上下文
+                    if 'timer' in diag.spelling.lower():
+                        log_f.write(f"  [发现timer相关错误!]\n")
+                        log_f.write(f"  - 详细分析: 这可能与TimerSystem结构体或Timer结构体定义有关\n")
+                        # 检查include路径是否正确
+                        log_f.write(f"  - 当前include路径: {args}\n")
+                        
+                    log_f.write("\n")
+            
+            # 记录翻译单元的基本信息（增强版）
+            log_f.write(f"翻译单元拼写: {tu.spelling}\n")
+            log_f.write(f"翻译单元游标类型: {tu.cursor.kind}\n")
+            log_f.write(f"翻译单元游标拼写: {tu.cursor.spelling}\n")
+            
+            # 添加更多翻译单元信息
+            log_f.write(f"翻译单元包含的文件数量: {len(list(tu.get_includes()))}\n")
+            log_f.write("包含的文件列表:\n")
+            for i, included in enumerate(tu.get_includes()):
+                log_f.write(f"  {i+1}. {included.include.name} (来自 {included.source.name}:{included.location.line})\n")
+            
+            # 检查是否存在未解析的符号
+            log_f.write("\n检查未解析的符号...\n")
+            self._check_unresolved_symbols(tu.cursor, log_f)
+    
+    def _process_translation_unit(self, tu, file_path, temp_dir, args, parse_log_file):
+        """处理解析成功的翻译单元"""  
+        # 处理诊断信息和未解析符号
+        self._process_diagnostics(tu, file_path, args, parse_log_file)
+        ast_debug_file = os.path.join(temp_dir, f'{os.path.basename(file_path)}.ast.debug')
+        with open(ast_debug_file, 'w', encoding='utf-8') as f:
+            self._dump_ast(tu.cursor, f)
+        print(f"{tu.cursor.spelling} AST generated at {ast_debug_file}")   
+        # 解析代码元素
+        self._parse_code_elements(tu.cursor)
+        # 构建控制流图、数据流图
+        self._build_cfg_dfg(tu.cursor)
+    
+    def _handle_parse_exception(self, e, file_path, args, parse_log_file):
+        """处理解析过程中的异常"""
+        error_msg = f"Error parsing {file_path}: {e}"
+        print(error_msg)
+        
+        # 记录详细的异常信息
+        with open(parse_log_file, 'a', encoding='utf-8') as log_f:
+            log_f.write(f"{error_msg}\n")
+            # 记录异常堆栈
+            import traceback
+            log_f.write("异常堆栈:\n")
+            log_f.write(traceback.format_exc())
+            log_f.write("\n")
+            
+            # 尝试获取更多关于错误的上下文信息
+            log_f.write("错误上下文信息:\n")
+            log_f.write(f"错误类型: {type(e).__name__}\n")
+            log_f.write(f"错误字符串表示: {str(e)}\n")
+            log_f.write(f"错误repr表示: {repr(e)}\n")
+            
+            # 特别处理'timer'相关错误
+            if 'timer' in str(e).lower():
+                log_f.write("\n[发现timer相关错误!]\n")
+                log_f.write("进行深入分析...\n")
+                
+                # 检查文件内容
+                log_f.write("检查文件内容:\n")
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as src_f:
+                        content = src_f.read()
+                        log_f.write(f"文件大小: {len(content)} 字节\n")
+                        
+                        # 检查关键结构体定义
+                        if 'TimerSystem' in content:
+                            log_f.write("找到TimerSystem结构体引用\n")
+                            # 提取结构体定义上下文
+                            idx = content.find('TimerSystem')
+                            start = max(0, idx - 100)
+                            end = min(len(content), idx + 100)
+                            log_f.write(f"上下文: ...{content[start:end]}...\n")
+                        else:
+                            log_f.write("未找到TimerSystem结构体引用\n")
+                        
+                        # 检查include语句
+                        includes = [line for line in content.split('\n') if '#include' in line]
+                        log_f.write(f"Include语句: {includes}\n")
+                        
+                        # 检查是否正确包含timer.h
+                        timer_h_included = any('timer.h' in inc for inc in includes)
+                        log_f.write(f"是否包含timer.h: {timer_h_included}\n")
+                except Exception as read_err:
+                    log_f.write(f"读取文件失败: {read_err}\n")
+                
+                # 检查include路径
+                log_f.write("\n检查include路径:\n")
+                log_f.write(f"编译参数: {args}\n")
+                
+                # 检查timer.h文件是否存在于include路径中
+                for inc_path in args:
+                    if inc_path.startswith('-I'):
+                        path = inc_path[2:]
+                        timer_h_path = os.path.join(path, 'timer.h')
+                        log_f.write(f"检查路径: {timer_h_path}, 存在: {os.path.exists(timer_h_path)}\n")
+                        
+                        # 如果存在，检查文件内容
+                        if os.path.exists(timer_h_path):
+                            try:
+                                with open(timer_h_path, 'r', encoding='utf-8') as h_f:
+                                    h_content = h_f.read()
+                                    log_f.write(f"timer.h大小: {len(h_content)} 字节\n")
+                                    if 'TimerSystem' in h_content:
+                                        log_f.write("timer.h中找到TimerSystem结构体定义\n")
+                                    else:
+                                        log_f.write("timer.h中未找到TimerSystem结构体定义\n")
+                            except Exception as h_err:
+                                log_f.write(f"读取timer.h失败: {h_err}\n")
+                
+                # 检查相对路径include
+                file_dir = os.path.dirname(file_path)
+                rel_timer_h = os.path.join(file_dir, '../include/timer.h')
+                log_f.write(f"检查相对路径: {rel_timer_h}, 存在: {os.path.exists(rel_timer_h)}\n")
+                
+                # 提供可能的解决方案
+                log_f.write("\n可能的解决方案:\n")
+                log_f.write("1. 确保timer.h文件在正确的include路径中\n")
+                log_f.write("2. 检查TimerSystem结构体是否在timer.h中正确定义\n")
+                log_f.write("3. 检查include语句是否使用了正确的相对路径\n")
+                log_f.write("4. 尝试使用绝对路径而不是相对路径\n")
+                log_f.write("5. 检查timer.h和timer.c中的结构体定义是否一致\n")
     
     def _dump_ast(self, cursor, file, level=0):
+        # 生成AST调试文件
         """将AST节点信息输出到文件,不进行相关分析"""
         # 输出当前节点信息
         indent = '  ' * level
@@ -484,7 +534,7 @@ class CCodeAnalyzer:
         # 递归处理子节点
         for child in cursor.get_children():
             self._dump_ast(child, file, level + 1)
-    
+
     def _parse_code_elements(self, cursor, parent_func=None):
         """递归查找所有代码元素，包括函数声明、变量声明和函数调用"""
         # 创建函数定义调试文件
@@ -521,10 +571,7 @@ class CCodeAnalyzer:
                 f.write(f"  - {param.spelling}: {param.type.spelling}\n")
             f.write(f"Extent: {cursor.extent.start.line}-{cursor.extent.end.line}\n")
             f.write("---\n")
-        
-        # 处理函数定义和声明
-        self.functions = getattr(self, 'functions', {})
-        
+        # 
         # 检查是否是函数定义
         is_def = cursor.is_definition()
         
@@ -554,9 +601,6 @@ class CCodeAnalyzer:
                         'is_heap': False,
                         'parent_function': func_name
                     }
-                # 添加参数到数据流图
-                self.dfg.add_node(param_name, type='parameter')
-                self.dfg.add_edge(param_name, func_name, type='parameter')
         else:
             self._process_function_declaration_only(cursor, func_name)
     
@@ -614,7 +658,14 @@ class CCodeAnalyzer:
             'calls': [],
             'location': f"{cursor.location.file}:{cursor.location.line}:{cursor.location.column}",
             'is_declaration': False,
-            'has_body': True
+            'has_body': True,
+            'local_dfg': nx.DiGraph(),  # 函数内部数据流图
+            'side_effects': {  # 函数副作用
+                'global_vars_read': set(),  # 读取的全局变量
+                'global_vars_write': set(),  # 写入的全局变量
+                'file_operations': [],  # 文件操作
+                'heap_operations': []  # 堆内存操作
+            }
         }
         
         # 如果已存在函数信息，保留某些字段
@@ -689,6 +740,11 @@ class CCodeAnalyzer:
             'arguments': []
         }
         
+        # 在函数内部数据流图中添加函数调用节点
+        call_node = f"CALL:{called_func}"
+        if parent_func in self.functions:
+            self.functions[parent_func]['local_dfg'].add_node(call_node, type='call')
+        
         # 分析函数调用参数
         args = list(cursor.get_arguments())
         for arg in args:
@@ -697,15 +753,26 @@ class CCodeAnalyzer:
                 for child in arg.get_children():
                     if child.kind == clang.cindex.CursorKind.STRING_LITERAL:
                         call_info['arguments'].append(child.spelling)
+                        # 添加字面量节点到函数内部数据流图
+                        if parent_func in self.functions:
+                            literal_node = f"LITERAL:string"
+                            self.functions[parent_func]['local_dfg'].add_node(literal_node, type='literal')
+                            self.functions[parent_func]['local_dfg'].add_edge(literal_node, call_node, type='argument')
                     elif child.kind == clang.cindex.CursorKind.INTEGER_LITERAL:
                         call_info['arguments'].append(str(child.spelling))
+                        # 添加字面量节点到函数内部数据流图
+                        if parent_func in self.functions:
+                            literal_node = f"LITERAL:integer"
+                            self.functions[parent_func]['local_dfg'].add_node(literal_node, type='literal')
+                            self.functions[parent_func]['local_dfg'].add_edge(literal_node, call_node, type='argument')
             elif arg.kind == clang.cindex.CursorKind.DECL_REF_EXPR:
                 # 处理变量参数
                 var_name = arg.spelling
                 call_info['arguments'].append(var_name)
                 if var_name in self.variables:
-                    # 添加到数据流图
-                    self.dfg.add_edge(var_name, called_func, type='argument')
+                    # 添加到函数内部数据流图
+                    if parent_func in self.functions:
+                        self.functions[parent_func]['local_dfg'].add_edge(var_name, call_node, type='argument')
                     
                     # 记录变量引用
                     self.variables[var_name]['references'].append({
@@ -713,6 +780,48 @@ class CCodeAnalyzer:
                         'as_argument': True,
                         'location': f"{arg.location.file}:{arg.location.line}:{arg.location.column}"
                     })
+                    
+                    # 如果参数是全局变量，记录为函数副作用
+                    if var_name in self.global_vars or var_name in self.static_vars:
+                        if parent_func in self.functions:
+                            self.functions[parent_func]['side_effects']['global_vars_read'].add(var_name)
+        
+        # 检查是否是文件操作函数
+        file_op_patterns = ['fopen', 'fclose', 'fread', 'fwrite', 'fprintf', 'fscanf', 'fseek', 'ftell', 'rewind', 'fflush']
+        if any(pattern in called_func for pattern in file_op_patterns):
+            # 记录文件操作作为函数副作用
+            if parent_func in self.functions:
+                operation_type = 'read' if any(op in called_func for op in ['read', 'scan', 'tell', 'seek', 'rewind']) else 'write'
+                file_arg = call_info['arguments'][0] if call_info['arguments'] else ''
+                
+                self.functions[parent_func]['side_effects']['file_operations'].append({
+                    'operation': operation_type,
+                    'file': file_arg,
+                    'location': call_info['location']
+                })
+                
+                # 添加文件操作节点到函数内部数据流图
+                file_op_node = f"FILE:{operation_type}"
+                self.functions[parent_func]['local_dfg'].add_node(file_op_node, type='file_operation')
+                self.functions[parent_func]['local_dfg'].add_edge(call_node, file_op_node, type='performs')
+        
+        # 检查是否是网络操作函数
+        network_op_patterns = ['socket', 'connect', 'bind', 'listen', 'accept', 'send', 'recv', 'sendto', 'recvfrom']
+        if any(pattern in called_func for pattern in network_op_patterns):
+            # 记录网络操作作为函数副作用
+            if parent_func in self.functions:
+                operation_type = 'receive' if any(op in called_func for op in ['recv', 'accept']) else 'send'
+                
+                self.functions[parent_func]['side_effects']['network_operations'].append({
+                    'operation': operation_type,
+                    'target': call_info['arguments'][0] if call_info['arguments'] else '',
+                    'location': call_info['location']
+                })
+                
+                # 添加网络操作节点到函数内部数据流图
+                network_op_node = f"NETWORK:{operation_type}"
+                self.functions[parent_func]['local_dfg'].add_node(network_op_node, type='network_operation')
+                self.functions[parent_func]['local_dfg'].add_edge(call_node, network_op_node, type='performs')
         
         # 记录返回值
         parent = cursor.semantic_parent
@@ -721,7 +830,21 @@ class CCodeAnalyzer:
                 call_info['return_value'] = parent.spelling
                 # 如果返回值赋给了变量，添加到数据流图
                 if 'return_value' in call_info and call_info['return_value'] in self.variables:
-                    self.dfg.add_edge(called_func, call_info['return_value'], type='return')
+                    return_var = call_info['return_value']
+                    
+                    # 添加到函数内部数据流图
+                    if parent_func in self.functions:
+                        self.functions[parent_func]['local_dfg'].add_edge(call_node, return_var, type='return')
+                        
+                        # 添加输出节点，表示函数调用的返回值
+                        output_node = f"OUTPUT:{called_func}"
+                        self.functions[parent_func]['local_dfg'].add_node(output_node, type='output')
+                        self.functions[parent_func]['local_dfg'].add_edge(call_node, output_node, type='produces')
+                    
+                    # 如果返回值是全局变量，记录为函数副作用
+                    if return_var in self.global_vars or return_var in self.static_vars:
+                        if parent_func in self.functions:
+                            self.functions[parent_func]['side_effects']['global_vars_write'].add(return_var)
                 break
             parent = parent.semantic_parent
         
@@ -772,7 +895,8 @@ class CCodeAnalyzer:
                 rhs = child
                 break
         
-        if lhs and rhs:
+        if lhs and rhs and parent_func and parent_func in self.functions:
+            # 处理左侧是变量引用的情况
             if lhs.kind == clang.cindex.CursorKind.DECL_REF_EXPR:
                 lhs_name = lhs.spelling
                 
@@ -782,8 +906,22 @@ class CCodeAnalyzer:
                     if rhs.kind == clang.cindex.CursorKind.DECL_REF_EXPR:
                         rhs_name = rhs.spelling
                         if rhs_name in self.variables:
-                            # 添加到数据流图
-                            self.dfg.add_edge(rhs_name, lhs_name, type='assignment')
+                            # 检查是否是全局变量或静态变量
+                            lhs_is_global = lhs_name in self.global_vars or lhs_name in self.static_vars
+                            rhs_is_global = rhs_name in self.global_vars or rhs_name in self.static_vars
+                            
+                            # 添加到函数内部数据流图
+                            self.functions[parent_func]['local_dfg'].add_edge(rhs_name, lhs_name, type='assignment')
+                            
+                            # 如果涉及全局变量，记录为函数副作用
+                            if rhs_is_global:
+                                self.functions[parent_func]['side_effects']['global_vars_read'].add(rhs_name)
+                            if lhs_is_global:
+                                self.functions[parent_func]['side_effects']['global_vars_write'].add(lhs_name)
+                                
+                            # 如果是全局变量间的数据流，也添加到全局数据流图
+                            if lhs_is_global or rhs_is_global:
+                                self.global_dfg.add_edge(rhs_name, lhs_name, type='assignment', via_function=parent_func)
                             
                             # 记录变量引用
                             self.variables[rhs_name]['references'].append({
@@ -793,14 +931,99 @@ class CCodeAnalyzer:
                             })
                     
                     # 检查右侧是否是函数调用
-                    elif rhs.kind == clang.cindex.CursorKind.CALL_EXPR or self._find_call_expr(rhs):
-                        # 函数调用的返回值赋给变量，在_process_function_call中处理
-                        pass
+                    elif rhs.kind == clang.cindex.CursorKind.CALL_EXPR:
+                        called_func = rhs.spelling
+                        # 添加函数调用节点到函数内部数据流图
+                        call_node = f"CALL:{called_func}"
+                        self.functions[parent_func]['local_dfg'].add_node(call_node, type='call')
+                        self.functions[parent_func]['local_dfg'].add_edge(call_node, lhs_name, type='return')
+                        
+                        # 分析函数调用参数
+                        for arg in rhs.get_arguments():
+                            if arg.kind == clang.cindex.CursorKind.DECL_REF_EXPR:
+                                arg_name = arg.spelling
+                                if arg_name in self.variables:
+                                    # 添加参数到函数调用的数据流
+                                    self.functions[parent_func]['local_dfg'].add_edge(arg_name, call_node, type='argument')
+                                    
+                                    # 如果参数是全局变量，记录为函数副作用
+                                    if arg_name in self.global_vars or arg_name in self.static_vars:
+                                        self.functions[parent_func]['side_effects']['global_vars_read'].add(arg_name)
                     
                     # 检查右侧是否是内存分配
                     elif self._check_heap_allocation(rhs):
                         self.heap_vars.add(lhs_name)
                         self.variables[lhs_name]['is_heap'] = True
+                        
+                        # 记录堆内存操作作为函数副作用
+                        self.functions[parent_func]['side_effects']['heap_operations'].append({
+                            'operation': 'allocation',
+                            'variable': lhs_name,
+                            'location': f"{lhs.location.file}:{lhs.location.line}:{lhs.location.column}"
+                        })
+                        
+                        # 添加堆内存分配节点到函数内部数据流图
+                        heap_node = f"HEAP:allocation"
+                        self.functions[parent_func]['local_dfg'].add_node(heap_node, type='heap_operation')
+                        self.functions[parent_func]['local_dfg'].add_edge(heap_node, lhs_name, type='allocation')
+                    
+                    # 处理字面量赋值
+                    elif rhs.kind == clang.cindex.CursorKind.INTEGER_LITERAL or \
+                         rhs.kind == clang.cindex.CursorKind.FLOATING_LITERAL or \
+                         rhs.kind == clang.cindex.CursorKind.STRING_LITERAL or \
+                         rhs.kind == clang.cindex.CursorKind.CHARACTER_LITERAL:
+                        # 添加字面量节点到函数内部数据流图
+                        literal_node = f"LITERAL:{rhs.kind}"
+                        self.functions[parent_func]['local_dfg'].add_node(literal_node, type='literal')
+                        self.functions[parent_func]['local_dfg'].add_edge(literal_node, lhs_name, type='assignment')
+                        
+                        # 如果左侧是全局变量，记录为函数副作用
+                        if lhs_name in self.global_vars or lhs_name in self.static_vars:
+                            self.functions[parent_func]['side_effects']['global_vars_write'].add(lhs_name)
+                    
+                    # 处理复杂表达式
+                    elif self._find_call_expr(rhs):
+                        # 函数调用的返回值赋给变量，在_process_function_call中处理
+                        pass
+                    else:
+                        # 处理其他类型的表达式
+                        expr_node = f"EXPR:{rhs.kind}"
+                        self.functions[parent_func]['local_dfg'].add_node(expr_node, type='expression')
+                        self.functions[parent_func]['local_dfg'].add_edge(expr_node, lhs_name, type='assignment')
+                        
+                        # 如果左侧是全局变量，记录为函数副作用
+                        if lhs_name in self.global_vars or lhs_name in self.static_vars:
+                            self.functions[parent_func]['side_effects']['global_vars_write'].add(lhs_name)
+            
+            # 处理左侧是数组访问的情况
+            elif lhs.kind == clang.cindex.CursorKind.ARRAY_SUBSCRIPT_EXPR:
+                # 获取数组名称
+                array_expr = None
+                for child in lhs.get_children():
+                    if child.kind == clang.cindex.CursorKind.DECL_REF_EXPR:
+                        array_expr = child
+                        break
+                
+                if array_expr:
+                    array_name = array_expr.spelling
+                    if array_name in self.variables:
+                        # 添加数组访问节点到函数内部数据流图
+                        array_access_node = f"ARRAY_ACCESS:{array_name}"
+                        self.functions[parent_func]['local_dfg'].add_node(array_access_node, type='array_access')
+                        
+                        # 处理右侧表达式
+                        if rhs.kind == clang.cindex.CursorKind.DECL_REF_EXPR:
+                            rhs_name = rhs.spelling
+                            if rhs_name in self.variables:
+                                self.functions[parent_func]['local_dfg'].add_edge(rhs_name, array_access_node, type='assignment')
+                                
+                                # 如果右侧是全局变量，记录为函数副作用
+                                if rhs_name in self.global_vars or rhs_name in self.static_vars:
+                                    self.functions[parent_func]['side_effects']['global_vars_read'].add(rhs_name)
+                        
+                        # 如果数组是全局变量，记录为函数副作用
+                        if array_name in self.global_vars or array_name in self.static_vars:
+                            self.functions[parent_func]['side_effects']['global_vars_write'].add(array_name)
                         
     def _find_call_expr(self, node):
         """递归查找节点中的函数调用表达式"""
@@ -1075,9 +1298,12 @@ class CCodeAnalyzer:
                         'is_static': False,
                         'is_heap': False
                     }
-                # 添加参数到数据流图
-                self.dfg.add_node(param_name, type='parameter')
-                self.dfg.add_edge(param_name, func_name, type='parameter')
+                # 添加参数到函数内部数据流图
+                if func_name in self.functions:
+                    self.functions[func_name]['local_dfg'].add_node(param_name, type='parameter')
+                    # 参数作为函数内部数据流的输入节点
+                    self.functions[func_name]['local_dfg'].add_node(f"INPUT:{param_name}", type='input')
+                    self.functions[func_name]['local_dfg'].add_edge(f"INPUT:{param_name}", param_name, type='parameter_input')
             
             # 处理函数内部
             for child in cursor.get_children():
@@ -1111,8 +1337,13 @@ class CCodeAnalyzer:
                         var_name = arg.spelling
                         call_info['arguments'].append(var_name)
                         if var_name in self.variables:
-                            # 添加到数据流图
-                            self.dfg.add_edge(var_name, called_func, type='argument')
+                            # 添加到函数内部数据流图
+                            if parent_func in self.functions:
+                                self.functions[parent_func]['local_dfg'].add_edge(var_name, f"CALL:{called_func}", type='argument')
+                            
+                            # 如果是全局变量，添加到全局数据流图
+                            if var_name in self.global_vars or var_name in self.static_vars:
+                                self.global_dfg.add_edge(var_name, called_func, type='argument', via_function=parent_func)
                 
                 # 记录返回值
                 parent = cursor.semantic_parent
@@ -1164,8 +1395,13 @@ class CCodeAnalyzer:
                                 'location': f"{arg.location.file}:{arg.location.line}:{arg.location.column}"
                             })
                             
-                            # 添加到数据流图
-                            self.dfg.add_edge(var_name, called_func, type='argument')
+                            # 添加到函数内部数据流图
+                            if parent_func in self.functions:
+                                self.functions[parent_func]['local_dfg'].add_edge(var_name, f"CALL:{called_func}", type='argument')
+                            
+                            # 如果是全局变量，添加到全局数据流图
+                            if var_name in self.global_vars or var_name in self.static_vars:
+                                self.global_dfg.add_edge(var_name, called_func, type='argument', via_function=parent_func)
         
         elif cursor.kind == clang.cindex.CursorKind.BINARY_OPERATOR:
             # 处理赋值等二元操作
@@ -1222,7 +1458,7 @@ class CCodeAnalyzer:
                         if rhs.kind == clang.cindex.CursorKind.DECL_REF_EXPR:
                             rhs_name = rhs.spelling
                             if rhs_name in self.variables:
-                                self.dfg.add_edge(rhs_name, lhs_name, type='assignment')
+                                self.global_dfg.add_edge(rhs_name, lhs_name, type='assignment')
         
         # 递归处理其他子节点
         for child in cursor.get_children():
@@ -1242,14 +1478,14 @@ class CCodeAnalyzer:
             for ref in var_info['references']:
                 func = ref['function']
                 # 在数据流图中添加指向堆内存的特殊标记
-                self.dfg.add_edge(var_name, func, type='heap_reference')
+                self.global_dfg.add_edge(var_name, func, type='heap_reference')
         
         # 第二轮：跟踪指向堆内存的指针传递
         # 查找数据流图中的赋值关系，如果源变量指向堆内存，则目标变量也指向堆内存
         heap_propagated = True
         while heap_propagated:
             heap_propagated = False
-            for src, dst, data in self.dfg.edges(data=True):
+            for src, dst, data in self.global_dfg.edges(data=True):
                 if data.get('type') == 'assignment' and src in self.heap_vars and dst not in self.heap_vars:
                     if dst in self.variables and self.variables[dst]['is_pointer']:
                         self.heap_vars.add(dst)
@@ -1364,22 +1600,22 @@ class CCodeAnalyzer:
     def visualize_dfg(self, output_file='data_flow_graph.png'):
         """可视化数据流图"""
         plt.figure(figsize=(12, 8))
-        pos = nx.spring_layout(self.dfg)
+        pos = nx.spring_layout(self.global_dfg)
         
         # 绘制不同类型的节点
-        global_nodes = [n for n in self.dfg.nodes() if n in self.global_vars]
-        static_nodes = [n for n in self.dfg.nodes() if n in self.static_vars]
-        heap_nodes = [n for n in self.dfg.nodes() if n in self.heap_vars]
-        other_nodes = [n for n in self.dfg.nodes() if n not in global_nodes + static_nodes + heap_nodes]
+        global_nodes = [n for n in self.global_dfg.nodes() if n in self.global_vars]
+        static_nodes = [n for n in self.global_dfg.nodes() if n in self.static_vars]
+        heap_nodes = [n for n in self.global_dfg.nodes() if n in self.heap_vars]
+        other_nodes = [n for n in self.global_dfg.nodes() if n not in global_nodes + static_nodes + heap_nodes]
         
-        nx.draw_networkx_nodes(self.dfg, pos, nodelist=global_nodes, node_color='red', node_size=1500, label='Global Variables')
-        nx.draw_networkx_nodes(self.dfg, pos, nodelist=static_nodes, node_color='green', node_size=1500, label='Static Variables')
-        nx.draw_networkx_nodes(self.dfg, pos, nodelist=heap_nodes, node_color='orange', node_size=1500, label='Heap Variables')
-        nx.draw_networkx_nodes(self.dfg, pos, nodelist=other_nodes, node_color='lightblue', node_size=1500)
+        nx.draw_networkx_nodes(self.global_dfg, pos, nodelist=global_nodes, node_color='red', node_size=1500, label='Global Variables')
+        nx.draw_networkx_nodes(self.global_dfg, pos, nodelist=static_nodes, node_color='green', node_size=1500, label='Static Variables')
+        nx.draw_networkx_nodes(self.global_dfg, pos, nodelist=heap_nodes, node_color='orange', node_size=1500, label='Heap Variables')
+        nx.draw_networkx_nodes(self.global_dfg, pos, nodelist=other_nodes, node_color='lightblue', node_size=1500)
         
         # 绘制边和标签
-        nx.draw_networkx_edges(self.dfg, pos, arrows=True)
-        nx.draw_networkx_labels(self.dfg, pos, font_size=10)
+        nx.draw_networkx_edges(self.global_dfg, pos, arrows=True)
+        nx.draw_networkx_labels(self.global_dfg, pos, font_size=10)
         
         plt.title("Data Flow Graph")
         plt.legend()
@@ -1401,14 +1637,14 @@ class CCodeAnalyzer:
             def serialize_graph(graph):
                 return {
                     'nodes': [
-                        {'id': str(node), 'data': data}
+                        {'id': str(node), **{k: str(v) for k, v in data.items()}}
                         for node, data in graph.nodes(data=True)
                     ],
                     'edges': [
                         {
-                            'source': str(src),
-                            'target': str(dst),
-                            'data': data
+                            'source': str(src).replace('\\', '/'),
+                            'target': str(dst).replace('\\', '/'),
+                            **{k: str(v) for k, v in data.items()}
                         }
                         for src, dst, data in graph.edges(data=True)
                     ]
@@ -1419,12 +1655,46 @@ class CCodeAnalyzer:
             # 先处理所有函数定义
             for name, func_info in self.functions.items():
                 if not func_info.get('is_declaration', True) and func_info.get('has_body', False):
-                    processed_functions[name] = func_info
+                    # 深拷贝函数信息，避免修改原始数据
+                    processed_func = {k: v for k, v in func_info.items()}
+                    
+                    # 处理local_dfg (DiGraph对象)
+                    if 'local_dfg' in processed_func and isinstance(processed_func['local_dfg'], nx.DiGraph):
+                        processed_func['local_dfg'] = serialize_graph(processed_func['local_dfg'])
+                    
+                    # 处理side_effects中的集合类型
+                    if 'side_effects' in processed_func and isinstance(processed_func['side_effects'], dict):
+                        side_effects = {}
+                        for effect_key, effect_value in processed_func['side_effects'].items():
+                            if isinstance(effect_value, set):
+                                side_effects[effect_key] = list(effect_value)
+                            else:
+                                side_effects[effect_key] = effect_value
+                        processed_func['side_effects'] = side_effects
+                    
+                    processed_functions[name] = processed_func
             
             # 再处理函数声明（只处理没有定义的函数）
             for name, func_info in self.functions.items():
                 if name not in processed_functions:
-                    processed_functions[name] = func_info
+                    # 深拷贝函数信息，避免修改原始数据
+                    processed_func = {k: v for k, v in func_info.items()}
+                    
+                    # 处理local_dfg (DiGraph对象)
+                    if 'local_dfg' in processed_func and isinstance(processed_func['local_dfg'], nx.DiGraph):
+                        processed_func['local_dfg'] = serialize_graph(processed_func['local_dfg'])
+                    
+                    # 处理side_effects中的集合类型
+                    if 'side_effects' in processed_func and isinstance(processed_func['side_effects'], dict):
+                        side_effects = {}
+                        for effect_key, effect_value in processed_func['side_effects'].items():
+                            if isinstance(effect_value, set):
+                                side_effects[effect_key] = list(effect_value)
+                            else:
+                                side_effects[effect_key] = effect_value
+                        processed_func['side_effects'] = side_effects
+                    
+                    processed_functions[name] = processed_func
             
             result = {
                 'files': self.files,
@@ -1443,9 +1713,13 @@ class CCodeAnalyzer:
                     for call_info in self.function_calls
                 ],
                 'control_flow': serialize_graph(self.cfg),
-                'data_flow': serialize_graph(self.dfg),
+                'data_flow': serialize_graph(self.global_dfg),
                 'business_logic': serialize_graph(self.business_logic),
-                'functions': processed_functions
+                'functions': processed_functions,
+                # 将集合类型转换为列表
+                'global_vars': list(self.global_vars),
+                'static_vars': list(self.static_vars),
+                'heap_vars': list(self.heap_vars)
             }
             
             # 写入JSON文件
@@ -1462,8 +1736,10 @@ class CCodeAnalyzer:
         """可视化业务逻辑框图"""
         plt.figure(figsize=(12, 8))
         pos = nx.spring_layout(self.business_logic)
-        nx.draw(self.business_logic, pos, with_labels=True, node_color='lightgreen', 
-                node_size=2000, arrows=True, font_size=10)
+        nx.draw_networkx_nodes(self.business_logic, pos, node_color='lightgreen', node_size=2000, label='业务节点')
+        nx.draw_networkx_edges(self.business_logic, pos, arrows=True)
+        nx.draw_networkx_labels(self.business_logic, pos, font_size=10)
         plt.title("Business Logic Diagram")
+        plt.legend()
         plt.savefig(output_file)
         plt.close()
